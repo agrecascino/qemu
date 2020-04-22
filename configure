@@ -303,6 +303,7 @@ libs_qga=""
 debug_info="yes"
 stack_protector=""
 use_containers="yes"
+gdb_bin=$(command -v "gdb")
 
 if test -e "$source_path/.git"
 then
@@ -405,6 +406,7 @@ EXESUF=""
 DSOSUF=".so"
 LDFLAGS_SHARED="-shared"
 modules="no"
+module_upgrades="no"
 prefix="/usr/local"
 mandir="\${prefix}/share/man"
 datadir="\${prefix}/share"
@@ -805,6 +807,7 @@ MINGW32*)
     audio_drv_list=""
   fi
   supported_os="yes"
+  pie="no"
 ;;
 GNU/kFreeBSD)
   bsd="yes"
@@ -899,7 +902,7 @@ Linux)
   linux="yes"
   linux_user="yes"
   kvm="yes"
-  QEMU_INCLUDES="-I\$(SRC_PATH)/linux-headers -I$PWD/linux-headers $QEMU_INCLUDES"
+  QEMU_INCLUDES="-isystem \$(SRC_PATH)/linux-headers -isystem $PWD/linux-headers $QEMU_INCLUDES"
   supported_os="yes"
   libudev="yes"
 ;;
@@ -1032,6 +1035,10 @@ for opt do
   --disable-modules)
       modules="no"
   ;;
+  --disable-module-upgrades) module_upgrades="no"
+  ;;
+  --enable-module-upgrades) module_upgrades="yes"
+  ;;
   --cpu=*)
   ;;
   --target-list=*) target_list="$optarg"
@@ -1061,7 +1068,6 @@ for opt do
   ;;
   --static)
     static="yes"
-    QEMU_LDFLAGS="-static $QEMU_LDFLAGS"
     QEMU_PKG_CONFIG_FLAGS="--static $QEMU_PKG_CONFIG_FLAGS"
   ;;
   --mandir=*) mandir="$optarg"
@@ -1421,6 +1427,11 @@ for opt do
   ;;
   --enable-avx2) avx2_opt="yes"
   ;;
+  --disable-avx512f) avx512f_opt="no"
+  ;;
+  --enable-avx512f) avx512f_opt="yes"
+  ;;
+
   --enable-glusterfs) glusterfs="yes"
   ;;
   --disable-virtio-blk-data-plane|--enable-virtio-blk-data-plane)
@@ -1587,6 +1598,8 @@ for opt do
   --enable-fuzzing) fuzzing=yes
   ;;
   --disable-fuzzing) fuzzing=no
+  ;;
+  --gdb=*) gdb_bin="$optarg"
   ;;
   *)
       echo "ERROR: unknown option $opt"
@@ -1773,6 +1786,7 @@ Advanced options (experts only):
   --enable-plugins
                            enable plugins via shared library loading
   --disable-containers     don't use containers for cross-building
+  --gdb=GDB-path           gdb to use for gdbstub tests [$gdb_bin]
 
 Optional features, enabled with --enable-FEATURE and
 disabled with --disable-FEATURE, default is enabled if available:
@@ -1786,6 +1800,7 @@ disabled with --disable-FEATURE, default is enabled if available:
   guest-agent-msi build guest agent Windows MSI installation package
   pie             Position Independent Executables
   modules         modules support (non-Windows)
+  module-upgrades try to load modules from alternate paths for upgrades
   debug-tcg       TCG debugging (default is disabled)
   debug-info      debugging information
   sparse          sparse checker
@@ -1857,6 +1872,7 @@ disabled with --disable-FEATURE, default is enabled if available:
   tcmalloc        tcmalloc support
   jemalloc        jemalloc support
   avx2            AVX2 optimization support
+  avx512f         AVX512F optimization support
   replication     replication support
   opengl          opengl support
   virglrenderer   virgl rendering support
@@ -1886,6 +1902,20 @@ fi
 
 # Remove old dependency files to make sure that they get properly regenerated
 rm -f */config-devices.mak.d
+
+# Remove syscall_nr.h to be sure they will be regenerated in the build
+# directory, not in the source directory
+for arch in alpha hppa m68k xtensa sh4 microblaze arm ppc s390x sparc sparc64 \
+    i386 x86_64 mips mips64 ; do
+    # remove the file if it has been generated in the source directory
+    rm -f "${source_path}/linux-user/${arch}/syscall_nr.h"
+    # remove the dependency files
+    for target in ${arch}*-linux-user ; do
+        test -d "${target}" && find "${target}" -type f -name "*.d" \
+             -exec grep -q "${source_path}/linux-user/${arch}/syscall_nr.h" {} \; \
+             -print | while read file ; do rm "${file}" "${file%.d}.o" ; done
+    done
+done
 
 if test -z "$python"
 then
@@ -2049,15 +2079,15 @@ if test "$modules" = "yes" && test "$mingw32" = "yes" ; then
   error_exit "Modules are not available for Windows"
 fi
 
+# module_upgrades is only reasonable if modules are enabled
+if test "$modules" = "no" && test "$module_upgrades" = "yes" ; then
+  error_exit "Can't enable module-upgrades as Modules are not enabled"
+fi
+
 # Static linking is not possible with modules or PIE
 if test "$static" = "yes" ; then
   if test "$modules" = "yes" ; then
     error_exit "static and modules are mutually incompatible"
-  fi
-  if test "$pie" = "yes" ; then
-    error_exit "static and pie are mutually incompatible"
-  else
-    pie="no"
   fi
 fi
 
@@ -2072,51 +2102,52 @@ if ! compile_prog "-Werror" "" ; then
 	"Thread-Local Storage (TLS). Please upgrade to a version that does."
 fi
 
-if test "$pie" = ""; then
-  case "$cpu-$targetos" in
-    i386-Linux|x86_64-Linux|x32-Linux|i386-OpenBSD|x86_64-OpenBSD)
-      ;;
-    *)
-      pie="no"
-      ;;
-  esac
-fi
-
-if test "$pie" != "no" ; then
-  cat > $TMPC << EOF
+cat > $TMPC << EOF
 
 #ifdef __linux__
 #  define THREAD __thread
 #else
 #  define THREAD
 #endif
-
 static THREAD int tls_var;
-
 int main(void) { return tls_var; }
-
 EOF
-  # check we support --no-pie first...
-  if compile_prog "-Werror -fno-pie" "-no-pie"; then
-    CFLAGS_NOPIE="-fno-pie"
-    LDFLAGS_NOPIE="-nopie"
-  fi
 
-  if compile_prog "-fPIE -DPIE" "-pie"; then
+# Check we support --no-pie first; we will need this for building ROMs.
+if compile_prog "-Werror -fno-pie" "-no-pie"; then
+  CFLAGS_NOPIE="-fno-pie"
+  LDFLAGS_NOPIE="-no-pie"
+fi
+
+if test "$static" = "yes"; then
+  if test "$pie" != "no" && compile_prog "-Werror -fPIE -DPIE" "-static-pie"; then
     QEMU_CFLAGS="-fPIE -DPIE $QEMU_CFLAGS"
-    QEMU_LDFLAGS="-pie $QEMU_LDFLAGS"
+    QEMU_LDFLAGS="-static-pie $QEMU_LDFLAGS"
     pie="yes"
-    if compile_prog "" "-Wl,-z,relro -Wl,-z,now" ; then
-      QEMU_LDFLAGS="-Wl,-z,relro -Wl,-z,now $QEMU_LDFLAGS"
-    fi
+  elif test "$pie" = "yes"; then
+    error_exit "-static-pie not available due to missing toolchain support"
   else
-    if test "$pie" = "yes"; then
-      error_exit "PIE not available due to missing toolchain support"
-    else
-      echo "Disabling PIE due to missing toolchain support"
-      pie="no"
-    fi
+    QEMU_LDFLAGS="-static $QEMU_LDFLAGS"
+    pie="no"
   fi
+elif test "$pie" = "no"; then
+  QEMU_CFLAGS="$CFLAGS_NOPIE $QEMU_CFLAGS"
+  QEMU_LDFLAGS="$LDFLAGS_NOPIE $QEMU_LDFLAGS"
+elif compile_prog "-Werror -fPIE -DPIE" "-pie"; then
+  QEMU_CFLAGS="-fPIE -DPIE $QEMU_CFLAGS"
+  QEMU_LDFLAGS="-pie $QEMU_LDFLAGS"
+  pie="yes"
+elif test "$pie" = "yes"; then
+  error_exit "PIE not available due to missing toolchain support"
+else
+  echo "Disabling PIE due to missing toolchain support"
+  pie="no"
+fi
+
+# Detect support for PT_GNU_RELRO + DT_BIND_NOW.
+# The combination is known as "full relro", because .got.plt is read-only too.
+if compile_prog "" "-Wl,-z,relro -Wl,-z,now" ; then
+  QEMU_LDFLAGS="-Wl,-z,relro -Wl,-z,now $QEMU_LDFLAGS"
 fi
 
 ##########################################
@@ -2475,7 +2506,8 @@ fi
 # zstd check
 
 if test "$zstd" != "no" ; then
-    if $pkg_config --exist libzstd ; then
+    libzstd_minver="1.4.0"
+    if $pkg_config --atleast-version=$libzstd_minver libzstd ; then
         zstd_cflags="$($pkg_config --cflags libzstd)"
         zstd_libs="$($pkg_config --libs libzstd)"
         LIBS="$zstd_libs $LIBS"
@@ -3349,7 +3381,9 @@ if test "$vnc" = "yes" && test "$vnc_sasl" != "no" ; then
 int main(void) { sasl_server_init(NULL, "qemu"); return 0; }
 EOF
   # Assuming Cyrus-SASL installed in /usr prefix
-  vnc_sasl_cflags=""
+  # QEMU defines struct iovec in "qemu/osdep.h",
+  # we don't want libsasl to redefine it in <sasl/sasl.h>.
+  vnc_sasl_cflags="-DSTRUCT_IOVEC_DEFINED"
   vnc_sasl_libs="-lsasl2"
   if compile_prog "$vnc_sasl_cflags" "$vnc_sasl_libs" ; then
     vnc_sasl=yes
@@ -3831,6 +3865,26 @@ if ! compile_prog "$glib_cflags -Werror" "$glib_libs" ; then
     fi
 fi
 
+# Silence clang warnings triggered by glib < 2.57.2
+cat > $TMPC << EOF
+#include <glib.h>
+typedef struct Foo {
+    int i;
+} Foo;
+static void foo_free(Foo *f)
+{
+    g_free(f);
+}
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(Foo, foo_free);
+int main(void) { return 0; }
+EOF
+if ! compile_prog "$glib_cflags -Werror" "$glib_libs" ; then
+    if cc_has_warning_flag "-Wno-unused-function"; then
+        glib_cflags="$glib_cflags -Wno-unused-function"
+        CFLAGS="$CFLAGS -Wno-unused-function"
+    fi
+fi
+
 #########################################
 # zlib check
 
@@ -4093,6 +4147,11 @@ if test "$linux_io_uring" != "no" ; then
     linux_io_uring_cflags=$($pkg_config --cflags liburing)
     linux_io_uring_libs=$($pkg_config --libs liburing)
     linux_io_uring=yes
+
+    # io_uring is used in libqemuutil.a where per-file -libs variables are not
+    # seen by programs linking the archive.  It's not ideal, but just add the
+    # library dependency globally.
+    LIBS="$linux_io_uring_libs $LIBS"
   else
     if test "$linux_io_uring" = "yes" ; then
       feature_not_found "linux io_uring" "Install liburing devel"
@@ -4178,7 +4237,7 @@ fi
 fdt_required=no
 for target in $target_list; do
   case $target in
-    aarch64*-softmmu|arm*-softmmu|ppc*-softmmu|microblaze*-softmmu|mips64el-softmmu|riscv*-softmmu)
+    aarch64*-softmmu|arm*-softmmu|ppc*-softmmu|microblaze*-softmmu|mips64el-softmmu|riscv*-softmmu|rx-softmmu)
       fdt_required=yes
     ;;
   esac
@@ -4870,6 +4929,12 @@ if check_include sys/kcov.h ; then
     kcov=yes
 fi
 
+# If we're making warnings fatal, apply this to Sphinx runs as well
+sphinx_werror=""
+if test "$werror" = "yes"; then
+    sphinx_werror="-W"
+fi
+
 # Check we have a new enough version of sphinx-build
 has_sphinx_build() {
     # This is a bit awkward but works: create a trivial document and
@@ -4878,7 +4943,9 @@ has_sphinx_build() {
     # sphinx-build doesn't exist at all or if it is too old.
     mkdir -p "$TMPDIR1/sphinx"
     touch "$TMPDIR1/sphinx/index.rst"
-    "$sphinx_build" -c "$source_path/docs" -b html "$TMPDIR1/sphinx" "$TMPDIR1/sphinx/out" >/dev/null 2>&1
+    "$sphinx_build" $sphinx_werror -c "$source_path/docs" \
+                    -b html "$TMPDIR1/sphinx" \
+                    "$TMPDIR1/sphinx/out"  >> config.log 2>&1
 }
 
 # Check if tools are available to build documentation.
@@ -5568,6 +5635,36 @@ EOF
   fi
 fi
 
+##########################################
+# avx512f optimization requirement check
+#
+# There is no point enabling this if cpuid.h is not usable,
+# since we won't be able to select the new routines.
+# by default, it is turned off.
+# if user explicitly want to enable it, check environment
+
+if test "$cpuid_h" = "yes" && test "$avx512f_opt" = "yes"; then
+  cat > $TMPC << EOF
+#pragma GCC push_options
+#pragma GCC target("avx512f")
+#include <cpuid.h>
+#include <immintrin.h>
+static int bar(void *a) {
+    __m512i x = *(__m512i *)a;
+    return _mm512_test_epi64_mask(x, x);
+}
+int main(int argc, char *argv[])
+{
+	return bar(argv[0]);
+}
+EOF
+  if ! compile_object "" ; then
+    avx512f_opt="no"
+  fi
+else
+  avx512f_opt="no"
+fi
+
 ########################################
 # check if __[u]int128_t is usable.
 
@@ -5703,58 +5800,6 @@ if  test "$plugins" = "yes" &&
       "that are exported to plugins. Unfortunately your linker doesn't " \
       "support the flag (--dynamic-list or -exported_symbols_list) used " \
       "for this purpose. You can't build with --static."
-fi
-
-########################################
-# See if 16-byte vector operations are supported.
-# Even without a vector unit the compiler may expand these.
-# There is a bug in old GCC for PPC that crashes here.
-# Unfortunately it's the system compiler for Centos 7.
-
-cat > $TMPC << EOF
-typedef unsigned char U1 __attribute__((vector_size(16)));
-typedef unsigned short U2 __attribute__((vector_size(16)));
-typedef unsigned int U4 __attribute__((vector_size(16)));
-typedef unsigned long long U8 __attribute__((vector_size(16)));
-typedef signed char S1 __attribute__((vector_size(16)));
-typedef signed short S2 __attribute__((vector_size(16)));
-typedef signed int S4 __attribute__((vector_size(16)));
-typedef signed long long S8 __attribute__((vector_size(16)));
-static U1 a1, b1;
-static U2 a2, b2;
-static U4 a4, b4;
-static U8 a8, b8;
-static S1 c1;
-static S2 c2;
-static S4 c4;
-static S8 c8;
-static int i;
-void helper(void *d, void *a, int shift, int i);
-void helper(void *d, void *a, int shift, int i)
-{
-  *(U1 *)(d + i) = *(U1 *)(a + i) << shift;
-  *(U2 *)(d + i) = *(U2 *)(a + i) << shift;
-  *(U4 *)(d + i) = *(U4 *)(a + i) << shift;
-  *(U8 *)(d + i) = *(U8 *)(a + i) << shift;
-}
-int main(void)
-{
-  a1 += b1; a2 += b2; a4 += b4; a8 += b8;
-  a1 -= b1; a2 -= b2; a4 -= b4; a8 -= b8;
-  a1 *= b1; a2 *= b2; a4 *= b4; a8 *= b8;
-  a1 &= b1; a2 &= b2; a4 &= b4; a8 &= b8;
-  a1 |= b1; a2 |= b2; a4 |= b4; a8 |= b8;
-  a1 ^= b1; a2 ^= b2; a4 ^= b4; a8 ^= b8;
-  a1 <<= i; a2 <<= i; a4 <<= i; a8 <<= i;
-  a1 >>= i; a2 >>= i; a4 >>= i; a8 >>= i;
-  c1 >>= i; c2 >>= i; c4 >>= i; c8 >>= i;
-  return 0;
-}
-EOF
-
-vector16=no
-if compile_prog "" "" ; then
-  vector16=yes
 fi
 
 ########################################
@@ -6457,49 +6502,6 @@ if test "$cpu" = "s390x" ; then
   fi
 fi
 
-# Probe for the need for relocating the user-only binary.
-if ( [ "$linux_user" = yes ] || [ "$bsd_user" = yes ] ) && [ "$pie" = no ]; then
-  textseg_addr=
-  case "$cpu" in
-    arm | i386 | ppc* | s390* | sparc* | x86_64 | x32)
-      # ??? Rationale for choosing this address
-      textseg_addr=0x60000000
-      ;;
-    mips)
-      # A 256M aligned address, high in the address space, with enough
-      # room for the code_gen_buffer above it before the stack.
-      textseg_addr=0x60000000
-      ;;
-  esac
-  if [ -n "$textseg_addr" ]; then
-    cat > $TMPC <<EOF
-    int main(void) { return 0; }
-EOF
-    textseg_ldflags="-Wl,-Ttext-segment=$textseg_addr"
-    if ! compile_prog "" "$textseg_ldflags"; then
-      # In case ld does not support -Ttext-segment, edit the default linker
-      # script via sed to set the .text start addr.  This is needed on FreeBSD
-      # at least.
-      if ! $ld --verbose >/dev/null 2>&1; then
-        error_exit \
-            "We need to link the QEMU user mode binaries at a" \
-            "specific text address. Unfortunately your linker" \
-            "doesn't support either the -Ttext-segment option or" \
-            "printing the default linker script with --verbose." \
-            "If you don't want the user mode binaries, pass the" \
-            "--disable-user option to configure."
-      fi
-
-      $ld --verbose | sed \
-        -e '1,/==================================================/d' \
-        -e '/==================================================/,$d' \
-        -e "s/[.] = [0-9a-fx]* [+] SIZEOF_HEADERS/. = $textseg_addr + SIZEOF_HEADERS/" \
-        -e "s/__executable_start = [0-9a-fx]*/__executable_start = $textseg_addr/" > config-host.ld
-      textseg_ldflags="-Wl,-T../config-host.ld"
-    fi
-  fi
-fi
-
 # Check that the C++ compiler exists and works with the C compiler.
 # All the QEMU_CXXFLAGS are based on QEMU_CFLAGS. Keep this at the end to don't miss any other that could be added.
 if has $cxx; then
@@ -6584,6 +6586,7 @@ if test "$slirp" != "no" ; then
     echo "smbd              $smbd"
 fi
 echo "module support    $modules"
+echo "alt path mod load $module_upgrades"
 echo "host CPU          $cpu"
 echo "host big endian   $bigendian"
 echo "target list       $target_list"
@@ -6711,6 +6714,7 @@ echo "libxml2           $libxml2"
 echo "tcmalloc support  $tcmalloc"
 echo "jemalloc support  $jemalloc"
 echo "avx2 optimization $avx2_opt"
+echo "avx512f optimization $avx512f_opt"
 echo "replication support $replication"
 echo "VxHS block device $vxhs"
 echo "bochs support     $bochs"
@@ -6728,6 +6732,7 @@ echo "libudev           $libudev"
 echo "default devices   $default_devices"
 echo "plugin support    $plugins"
 echo "fuzzing support   $fuzzing"
+echo "gdb               $gdb_bin"
 
 if test "$supported_cpu" = "no"; then
     echo
@@ -6936,6 +6941,9 @@ if test "$modules" = "yes"; then
   # like as an symbol. So prefix it with an underscore
   echo "CONFIG_STAMP=_$( (echo $qemu_version; echo $pkgversion; cat $0) | $shacmd - | cut -f1 -d\ )" >> $config_host_mak
   echo "CONFIG_MODULES=y" >> $config_host_mak
+fi
+if test "$module_upgrades" = "yes"; then
+  echo "CONFIG_MODULE_UPGRADES=y" >> $config_host_mak
 fi
 if test "$have_x11" = "yes" && test "$need_x11" = "yes"; then
   echo "CONFIG_X11=y" >> $config_host_mak
@@ -7262,6 +7270,10 @@ if test "$avx2_opt" = "yes" ; then
   echo "CONFIG_AVX2_OPT=y" >> $config_host_mak
 fi
 
+if test "$avx512f_opt" = "yes" ; then
+  echo "CONFIG_AVX512F_OPT=y" >> $config_host_mak
+fi
+
 if test "$lzo" = "yes" ; then
   echo "CONFIG_LZO=y" >> $config_host_mak
 fi
@@ -7375,10 +7387,6 @@ fi
 
 if test "$atomic64" = "yes" ; then
   echo "CONFIG_ATOMIC64=y" >> $config_host_mak
-fi
-
-if test "$vector16" = "yes" ; then
-  echo "CONFIG_VECTOR16=y" >> $config_host_mak
 fi
 
 if test "$attralias" = "yes" ; then
@@ -7602,6 +7610,10 @@ if test "$plugins" = "yes" ; then
     fi
 fi
 
+if test -n "$gdb_bin" ; then
+    echo "HAVE_GDB_BIN=$gdb_bin" >> $config_host_mak
+fi
+
 if test "$tcg_interpreter" = "yes"; then
   QEMU_INCLUDES="-iquote \$(SRC_PATH)/tcg/tci $QEMU_INCLUDES"
 elif test "$ARCH" = "sparc64" ; then
@@ -7628,6 +7640,7 @@ echo "INSTALL_PROG=$install -c -m 0755" >> $config_host_mak
 echo "INSTALL_LIB=$install -c -m 0644" >> $config_host_mak
 echo "PYTHON=$python" >> $config_host_mak
 echo "SPHINX_BUILD=$sphinx_build" >> $config_host_mak
+echo "SPHINX_WERROR=$sphinx_werror" >> $config_host_mak
 echo "GENISOIMAGE=$genisoimage" >> $config_host_mak
 echo "CC=$cc" >> $config_host_mak
 if $iasl -h > /dev/null 2>&1; then
@@ -7776,17 +7789,21 @@ case "$target_name" in
   i386)
     mttcg="yes"
 	gdb_xml_files="i386-32bit.xml"
+    TARGET_SYSTBL_ABI=i386
   ;;
   x86_64)
     TARGET_BASE_ARCH=i386
+    TARGET_SYSTBL_ABI=common,64
     mttcg="yes"
 	gdb_xml_files="i386-64bit.xml"
   ;;
   alpha)
     mttcg="yes"
+    TARGET_SYSTBL_ABI=common
   ;;
   arm|armeb)
     TARGET_ARCH=arm
+    TARGET_SYSTBL_ABI=common,oabi
     bflt="yes"
     mttcg="yes"
     gdb_xml_files="arm-core.xml arm-vfp.xml arm-vfp3.xml arm-neon.xml"
@@ -7802,15 +7819,18 @@ case "$target_name" in
   ;;
   hppa)
     mttcg="yes"
+    TARGET_SYSTBL_ABI=common,32
   ;;
   lm32)
   ;;
   m68k)
     bflt="yes"
     gdb_xml_files="cf-core.xml cf-fp.xml m68k-fp.xml"
+    TARGET_SYSTBL_ABI=common
   ;;
   microblaze|microblazeel)
     TARGET_ARCH=microblaze
+    TARGET_SYSTBL_ABI=common
     bflt="yes"
     echo "TARGET_ABI32=y" >> $config_target_mak
   ;;
@@ -7818,6 +7838,7 @@ case "$target_name" in
     mttcg="yes"
     TARGET_ARCH=mips
     echo "TARGET_ABI_MIPSO32=y" >> $config_target_mak
+    TARGET_SYSTBL_ABI=o32
   ;;
   mipsn32|mipsn32el)
     mttcg="yes"
@@ -7825,12 +7846,14 @@ case "$target_name" in
     TARGET_BASE_ARCH=mips
     echo "TARGET_ABI_MIPSN32=y" >> $config_target_mak
     echo "TARGET_ABI32=y" >> $config_target_mak
+    TARGET_SYSTBL_ABI=n32
   ;;
   mips64|mips64el)
-    mttcg="yes"
+    mttcg="no"
     TARGET_ARCH=mips64
     TARGET_BASE_ARCH=mips
     echo "TARGET_ABI_MIPSN64=y" >> $config_target_mak
+    TARGET_SYSTBL_ABI=n64
   ;;
   moxie)
   ;;
@@ -7842,10 +7865,12 @@ case "$target_name" in
   ;;
   ppc)
     gdb_xml_files="power-core.xml power-fpu.xml power-altivec.xml power-spe.xml"
+    TARGET_SYSTBL_ABI=common,nospu,32
   ;;
   ppc64)
     TARGET_BASE_ARCH=ppc
     TARGET_ABI_DIR=ppc
+    TARGET_SYSTBL_ABI=common,nospu,64
     mttcg=yes
     gdb_xml_files="power64-core.xml power-fpu.xml power-altivec.xml power-spe.xml power-vsx.xml"
   ;;
@@ -7853,6 +7878,7 @@ case "$target_name" in
     TARGET_ARCH=ppc64
     TARGET_BASE_ARCH=ppc
     TARGET_ABI_DIR=ppc
+    TARGET_SYSTBL_ABI=common,nospu,64
     mttcg=yes
     gdb_xml_files="power64-core.xml power-fpu.xml power-altivec.xml power-spe.xml power-vsx.xml"
   ;;
@@ -7860,6 +7886,7 @@ case "$target_name" in
     TARGET_ARCH=ppc64
     TARGET_BASE_ARCH=ppc
     TARGET_ABI_DIR=ppc
+    TARGET_SYSTBL_ABI=common,nospu,32
     echo "TARGET_ABI32=y" >> $config_target_mak
     gdb_xml_files="power64-core.xml power-fpu.xml power-altivec.xml power-spe.xml power-vsx.xml"
   ;;
@@ -7875,22 +7902,33 @@ case "$target_name" in
     mttcg=yes
     gdb_xml_files="riscv-64bit-cpu.xml riscv-32bit-fpu.xml riscv-64bit-fpu.xml riscv-64bit-csr.xml riscv-64bit-virtual.xml"
   ;;
+  rx)
+    TARGET_ARCH=rx
+    bflt="yes"
+    target_compiler=$cross_cc_rx
+    gdb_xml_files="rx-core.xml"
+  ;;
   sh4|sh4eb)
     TARGET_ARCH=sh4
+    TARGET_SYSTBL_ABI=common
     bflt="yes"
   ;;
   sparc)
+    TARGET_SYSTBL_ABI=common,32
   ;;
   sparc64)
     TARGET_BASE_ARCH=sparc
+    TARGET_SYSTBL_ABI=common,64
   ;;
   sparc32plus)
     TARGET_ARCH=sparc64
     TARGET_BASE_ARCH=sparc
     TARGET_ABI_DIR=sparc
+    TARGET_SYSTBL_ABI=common,32
     echo "TARGET_ABI32=y" >> $config_target_mak
   ;;
   s390x)
+    TARGET_SYSTBL_ABI=common,64
     mttcg=yes
     gdb_xml_files="s390x-core64.xml s390-acr.xml s390-fpr.xml s390-vx.xml s390-cr.xml s390-virt.xml s390-gs.xml"
   ;;
@@ -7902,6 +7940,7 @@ case "$target_name" in
   ;;
   xtensa|xtensaeb)
     TARGET_ARCH=xtensa
+    TARGET_SYSTBL_ABI=common
     bflt="yes"
     mttcg="yes"
   ;;
@@ -7930,6 +7969,9 @@ fi
 echo "TARGET_ABI_DIR=$TARGET_ABI_DIR" >> $config_target_mak
 if [ "$HOST_VARIANT_DIR" != "" ]; then
     echo "HOST_VARIANT_DIR=$HOST_VARIANT_DIR" >> $config_target_mak
+fi
+if [ "$TARGET_SYSTBL_ABI" != "" ]; then
+    echo "TARGET_SYSTBL_ABI=$TARGET_SYSTBL_ABI" >> $config_target_mak
 fi
 
 if supported_xen_target $target; then
@@ -8056,6 +8098,9 @@ for i in $ARCH $TARGET_BASE_ARCH ; do
   riscv*)
     disas_config "RISCV"
   ;;
+  rx)
+    disas_config "RX"
+  ;;
   s390*)
     disas_config "S390"
   ;;
@@ -8090,10 +8135,6 @@ if test "$gprof" = "yes" ; then
     ldflags="-p $ldflags"
     echo "GPROF_CFLAGS=-p" >> $config_target_mak
   fi
-fi
-
-if test "$target_linux_user" = "yes" || test "$target_bsd_user" = "yes" ; then
-  ldflags="$ldflags $textseg_ldflags"
 fi
 
 # Newer kernels on s390 check for an S390_PGSTE program header and

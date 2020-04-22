@@ -26,6 +26,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/rcu.h"
 #include "migration/failover.h"
+#include "migration/ram.h"
 #ifdef CONFIG_REPLICATION
 #include "replication.h"
 #endif
@@ -92,6 +93,7 @@ static void secondary_vm_do_failover(void)
     replication_stop_all(true, &local_err);
     if (local_err) {
         error_report_err(local_err);
+        local_err = NULL;
     }
 
     /* Notify all filters of all NIC to do checkpoint */
@@ -844,6 +846,8 @@ void *colo_process_incoming_thread(void *opaque)
      * set the fd back to blocked.
      */
     qemu_file_set_blocking(mis->from_src_file, true);
+
+    colo_incoming_start_dirty_log();
 
     bioc = qio_channel_buffer_new(COLO_BUFFER_BASE_SIZE);
     fb = qemu_fopen_channel_input(QIO_CHANNEL(bioc));

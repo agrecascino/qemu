@@ -243,6 +243,14 @@ struct rtas_event_log_v6_mc {
 #define RTAS_LOG_V6_MC_TLB_PARITY                        1
 #define RTAS_LOG_V6_MC_TLB_MULTIHIT                      2
 #define RTAS_LOG_V6_MC_TLB_INDETERMINATE                 3
+/*
+ * Per PAPR,
+ * For UE error type, set bit 1 of sub_err_type to indicate effective addr is
+ * provided. For other error types (SLB/ERAT/TLB), set bit 0 to indicate
+ * same.
+ */
+#define RTAS_LOG_V6_MC_UE_EA_ADDR_PROVIDED               0x40
+#define RTAS_LOG_V6_MC_EA_ADDR_PROVIDED                  0x80
     uint8_t reserved_1[6];
     uint64_t effective_address;
     uint64_t logical_address;
@@ -726,6 +734,22 @@ void spapr_hotplug_req_remove_by_count_indexed(SpaprDrcType drc_type,
                             RTAS_LOG_V6_HP_ACTION_REMOVE, drc_type, &drc_id);
 }
 
+static void spapr_mc_set_ea_provided_flag(struct mc_extended_log *ext_elog)
+{
+    switch (ext_elog->mc.error_type) {
+    case RTAS_LOG_V6_MC_TYPE_UE:
+        ext_elog->mc.sub_err_type |= RTAS_LOG_V6_MC_UE_EA_ADDR_PROVIDED;
+        break;
+    case RTAS_LOG_V6_MC_TYPE_SLB:
+    case RTAS_LOG_V6_MC_TYPE_ERAT:
+    case RTAS_LOG_V6_MC_TYPE_TLB:
+        ext_elog->mc.sub_err_type |= RTAS_LOG_V6_MC_EA_ADDR_PROVIDED;
+        break;
+    default:
+        break;
+    }
+}
+
 static uint32_t spapr_mce_get_elog_type(PowerPCCPU *cpu, bool recovered,
                                         struct mc_extended_log *ext_elog)
 {
@@ -751,6 +775,7 @@ static uint32_t spapr_mce_get_elog_type(PowerPCCPU *cpu, bool recovered,
             ext_elog->mc.sub_err_type = mc_derror_table[i].error_subtype;
             if (mc_derror_table[i].dar_valid) {
                 ext_elog->mc.effective_address = cpu_to_be64(env->spr[SPR_DAR]);
+                spapr_mc_set_ea_provided_flag(ext_elog);
             }
 
             summary |= mc_derror_table[i].initiator
@@ -769,6 +794,7 @@ static uint32_t spapr_mce_get_elog_type(PowerPCCPU *cpu, bool recovered,
             ext_elog->mc.sub_err_type = mc_ierror_table[i].error_subtype;
             if (mc_ierror_table[i].nip_valid) {
                 ext_elog->mc.effective_address = cpu_to_be64(env->nip);
+                spapr_mc_set_ea_provided_flag(ext_elog);
             }
 
             summary |= mc_ierror_table[i].initiator
@@ -786,27 +812,11 @@ static void spapr_mce_dispatch_elog(PowerPCCPU *cpu, bool recovered)
 {
     SpaprMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
     CPUState *cs = CPU(cpu);
-    uint64_t rtas_addr;
     CPUPPCState *env = &cpu->env;
-    PowerPCCPUClass *pcc = POWERPC_CPU_GET_CLASS(cpu);
-    target_ulong msr = 0;
+    uint64_t rtas_addr;
     struct rtas_error_log log;
     struct mc_extended_log *ext_elog;
     uint32_t summary;
-
-    /*
-     * Properly set bits in MSR before we invoke the handler.
-     * SRR0/1, DAR and DSISR are properly set by KVM
-     */
-    if (!(*pcc->interrupts_big_endian)(cpu)) {
-        msr |= (1ULL << MSR_LE);
-    }
-
-    if (env->msr & (1ULL << MSR_SF)) {
-        msr |= (1ULL << MSR_SF);
-    }
-
-    msr |= (1ULL << MSR_ME);
 
     ext_elog = g_malloc0(sizeof(*ext_elog));
     summary = spapr_mce_get_elog_type(cpu, recovered, ext_elog);
@@ -823,11 +833,27 @@ static void spapr_mce_dispatch_elog(PowerPCCPU *cpu, bool recovered)
     /* get rtas addr from fdt */
     rtas_addr = spapr_get_rtas_addr();
     if (!rtas_addr) {
-        /* Unable to fetch rtas_addr. Hence reset the guest */
-        ppc_cpu_do_system_reset(cs);
+        if (!recovered) {
+            error_report(
+"FWNMI: Unable to deliver machine check to guest: rtas_addr not found.");
+            qemu_system_guest_panicked(NULL);
+        } else {
+            warn_report(
+"FWNMI: Unable to deliver machine check to guest: rtas_addr not found. "
+"Machine check recovered.");
+        }
         g_free(ext_elog);
         return;
     }
+
+    /*
+     * By taking the interlock, we assume that the MCE will be
+     * delivered to the guest. CAUTION: don't add anything that could
+     * prevent the MCE to be delivered after this line, otherwise the
+     * guest won't be able to release the interlock and ultimately
+     * hang/crash?
+     */
+    spapr->fwnmi_machine_check_interlock = cpu->vcpu_id;
 
     stq_be_phys(&address_space_memory, rtas_addr + RTAS_ERROR_LOG_OFFSET,
                 env->gpr[3]);
@@ -836,12 +862,11 @@ static void spapr_mce_dispatch_elog(PowerPCCPU *cpu, bool recovered)
     cpu_physical_memory_write(rtas_addr + RTAS_ERROR_LOG_OFFSET +
                               sizeof(env->gpr[3]) + sizeof(log), ext_elog,
                               sizeof(*ext_elog));
+    g_free(ext_elog);
 
     env->gpr[3] = rtas_addr + RTAS_ERROR_LOG_OFFSET;
-    env->msr = msr;
-    env->nip = spapr->guest_machine_check_addr;
 
-    g_free(ext_elog);
+    ppc_cpu_do_fwnmi_machine_check(cs, spapr->fwnmi_machine_check_addr);
 }
 
 void spapr_mce_req_event(PowerPCCPU *cpu, bool recovered)
@@ -851,31 +876,40 @@ void spapr_mce_req_event(PowerPCCPU *cpu, bool recovered)
     int ret;
     Error *local_err = NULL;
 
-    if (spapr->guest_machine_check_addr == -1) {
-        /*
-         * This implies that we have hit a machine check either when the
-         * guest has not registered FWNMI (i.e., "ibm,nmi-register" not
-         * called) or between system reset and "ibm,nmi-register".
-         * Fall back to the old machine check behavior in such cases.
-         */
+    if (spapr->fwnmi_machine_check_addr == -1) {
+        /* Non-FWNMI case, deliver it like an architected CPU interrupt. */
         cs->exception_index = POWERPC_EXCP_MCHECK;
         ppc_cpu_do_interrupt(cs);
         return;
     }
 
-    while (spapr->mc_status != -1) {
+    /* Wait for FWNMI interlock. */
+    while (spapr->fwnmi_machine_check_interlock != -1) {
         /*
          * Check whether the same CPU got machine check error
          * while still handling the mc error (i.e., before
          * that CPU called "ibm,nmi-interlock")
          */
-        if (spapr->mc_status == cpu->vcpu_id) {
-            qemu_system_guest_panicked(NULL);
+        if (spapr->fwnmi_machine_check_interlock == cpu->vcpu_id) {
+            if (!recovered) {
+                error_report(
+"FWNMI: Unable to deliver machine check to guest: nested machine check.");
+                qemu_system_guest_panicked(NULL);
+            } else {
+                warn_report(
+"FWNMI: Unable to deliver machine check to guest: nested machine check. "
+"Machine check recovered.");
+            }
             return;
         }
-        qemu_cond_wait_iothread(&spapr->mc_delivery_cond);
-        /* Meanwhile if the system is reset, then just return */
-        if (spapr->guest_machine_check_addr == -1) {
+        qemu_cond_wait_iothread(&spapr->fwnmi_machine_check_interlock_cond);
+        if (spapr->fwnmi_machine_check_addr == -1) {
+            /*
+             * If the machine was reset while waiting for the interlock,
+             * abort the delivery. The machine check applies to a context
+             * that no longer exists, so it wouldn't make sense to deliver
+             * it now.
+             */
             return;
         }
     }
@@ -886,12 +920,13 @@ void spapr_mce_req_event(PowerPCCPU *cpu, bool recovered)
          * We don't want to abort so we let the migration to continue.
          * In a rare case, the machine check handler will run on the target.
          * Though this is not preferable, it is better than aborting
-         * the migration or killing the VM.
+         * the migration or killing the VM. It is okay to call
+         * migrate_del_blocker on a blocker that was not added (which the
+         * nmi-interlock handler would do when it's called after this).
          */
         warn_report("Received a fwnmi while migration was in progress");
     }
 
-    spapr->mc_status = cpu->vcpu_id;
     spapr_mce_dispatch_elog(cpu, recovered);
 }
 
@@ -980,6 +1015,19 @@ void spapr_clear_pending_events(SpaprMachineState *spapr)
         QTAILQ_REMOVE(&spapr->pending_events, entry, next);
         g_free(entry->extended_log);
         g_free(entry);
+    }
+}
+
+void spapr_clear_pending_hotplug_events(SpaprMachineState *spapr)
+{
+    SpaprEventLogEntry *entry = NULL, *next_entry;
+
+    QTAILQ_FOREACH_SAFE(entry, &spapr->pending_events, next, next_entry) {
+        if (spapr_event_log_entry_type(entry) == RTAS_LOG_TYPE_HOTPLUG) {
+            QTAILQ_REMOVE(&spapr->pending_events, entry, next);
+            g_free(entry->extended_log);
+            g_free(entry);
+        }
     }
 }
 

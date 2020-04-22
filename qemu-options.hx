@@ -1,10 +1,10 @@
-HXCOMM Use DEFHEADING() to define headings in both help text and texi
-HXCOMM Text between STEXI and ETEXI are copied to texi version and
-HXCOMM discarded from C version
+HXCOMM Use DEFHEADING() to define headings in both help text and rST.
+HXCOMM Text between SRST and ERST is copied to the rST version and
+HXCOMM discarded from C version.
 HXCOMM DEF(option, HAS_ARG/0, opt_enum, opt_help, arch_mask) is used to
 HXCOMM construct option structures, enums and help message for specified
 HXCOMM architectures.
-HXCOMM HXCOMM can be used for comments, discarded from both texi and C
+HXCOMM HXCOMM can be used for comments, discarded from both rST and C.
 
 DEFHEADING(Standard options:)
 
@@ -551,7 +551,7 @@ DEF("audiodev", HAS_ARG, QEMU_OPTION_audiodev,
     "                in|out.frequency= frequency to use with fixed settings\n"
     "                in|out.channels= number of channels to use with fixed settings\n"
     "                in|out.format= sample format to use with fixed settings\n"
-    "                valid values: s8, s16, s32, u8, u16, u32\n"
+    "                valid values: s8, s16, s32, u8, u16, u32, f32\n"
     "                in|out.voices= number of voices to use\n"
     "                in|out.buffer-length= length of buffer in microseconds\n"
     "-audiodev none,id=id,[,prop[=value][,...]]\n"
@@ -647,7 +647,7 @@ SRST
     ``in|out.format=format``
         Specify the sample format to use when using fixed-settings.
         Valid values are: ``s8``, ``s16``, ``s32``, ``u8``, ``u16``,
-        ``u32``. Default is ``s16``.
+        ``u32``, ``f32``. Default is ``s16``.
 
     ``in|out.voices=voices``
         Specify the number of voices to use. Default is 1.
@@ -3680,14 +3680,26 @@ SRST
 ERST
 
 DEF("gdb", HAS_ARG, QEMU_OPTION_gdb, \
-    "-gdb dev        wait for gdb connection on 'dev'\n", QEMU_ARCH_ALL)
+    "-gdb dev        accept gdb connection on 'dev'. (QEMU defaults to starting\n"
+    "                the guest without waiting for gdb to connect; use -S too\n"
+    "                if you want it to not start execution.)\n",
+    QEMU_ARCH_ALL)
 SRST
 ``-gdb dev``
-    Wait for gdb connection on device dev (see
-    :ref:`gdb_005fusage`). Typical connections will likely be
-    TCP-based, but also UDP, pseudo TTY, or even stdio are reasonable
-    use case. The latter is allowing to start QEMU from within gdb and
-    establish the connection via a pipe:
+    Accept a gdb connection on device dev (see
+    :ref:`gdb_005fusage`). Note that this option does not pause QEMU
+    execution -- if you want QEMU to not start the guest until you
+    connect with gdb and issue a ``continue`` command, you will need to
+    also pass the ``-S`` option to QEMU.
+
+    The most usual configuration is to listen on a local TCP socket::
+
+        -gdb tcp::3117
+
+    but you can specify other backends; UDP, pseudo TTY, or even stdio
+    are all reasonable use cases. For example, a stdio connection
+    allows you to start QEMU from within gdb and establish the
+    connection via a pipe:
 
     .. parsed-literal::
 
@@ -4615,7 +4627,7 @@ SRST
         stored. The file format is libpcap, so it can be analyzed with
         tools such as tcpdump or Wireshark.
 
-    ``-object colo-compare,id=id,primary_in=chardevid,secondary_in=chardevid,outdev=chardevid,iothread=id[,vnet_hdr_support][,notify_dev=id]``
+    ``-object colo-compare,id=id,primary_in=chardevid,secondary_in=chardevid,outdev=chardevid,iothread=id[,vnet_hdr_support][,notify_dev=id][,compare_timeout=@var{ms}][,expired_scan_cycle=@var{ms}``
         Colo-compare gets packet from primary\_inchardevid and
         secondary\_inchardevid, than compare primary packet with
         secondary packet. If the packets are same, we will output
@@ -4624,8 +4636,12 @@ SRST
         outdevchardevid. In order to improve efficiency, we need to put
         the task of comparison in another thread. If it has the
         vnet\_hdr\_support flag, colo compare will send/recv packet with
-        vnet\_hdr\_len. If you want to use Xen COLO, will need the
-        notify\_dev to notify Xen colo-frame to do checkpoint.
+        vnet\_hdr\_len. Then compare\_timeout=@var{ms} determines the
+        maximum delay colo-compare wait for the packet.
+        The expired\_scan\_cycle=@var{ms} to set the period of scanning
+        expired primary node network packets.
+        If you want to use Xen COLO, will need the notify\_dev to
+        notify Xen colo-frame to do checkpoint.
 
         we must use it with the help of filter-mirror and
         filter-redirector.

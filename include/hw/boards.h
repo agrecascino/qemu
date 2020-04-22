@@ -71,7 +71,7 @@ typedef struct CPUArchId {
  */
 typedef struct {
     int len;
-    CPUArchId cpus[0];
+    CPUArchId cpus[];
 } CPUArchIdList;
 
 /**
@@ -152,6 +152,12 @@ typedef struct {
  *    It also will be used as a way to optin into "-m" option support.
  *    If it's not set by board, '-m' will be ignored and generic code will
  *    not create default RAM MemoryRegion.
+ * @fixup_ram_size:
+ *    Amends user provided ram size (with -m option) using machine
+ *    specific algorithm. To be used by old machine types for compat
+ *    purposes only.
+ *    Applies only to default memory backend, i.e., explicit memory backend
+ *    wasn't used.
  */
 struct MachineClass {
     /*< private >*/
@@ -218,6 +224,7 @@ struct MachineClass {
                                                          unsigned cpu_index);
     const CPUArchIdList *(*possible_cpu_arch_ids)(MachineState *machine);
     int64_t (*get_default_cpu_node_id)(const MachineState *ms, int idx);
+    ram_addr_t (*fixup_ram_size)(ram_addr_t size);
 };
 
 /**
@@ -236,12 +243,14 @@ typedef struct DeviceMemoryState {
  * @cpus: the number of present logical processors on the machine
  * @cores: the number of cores in one package
  * @threads: the number of threads in one core
+ * @sockets: the number of sockets on the machine
  * @max_cpus: the maximum number of logical processors on the machine
  */
 typedef struct CpuTopology {
     unsigned int cpus;
     unsigned int cores;
     unsigned int threads;
+    unsigned int sockets;
     unsigned int max_cpus;
 } CpuTopology;
 

@@ -213,6 +213,9 @@ enum {
 #define MEMCTL_IL0EN 0x1
 
 #define MAX_INSN_LENGTH 64
+#define MAX_INSNBUF_LENGTH \
+    ((MAX_INSN_LENGTH + sizeof(xtensa_insnbuf_word) - 1) / \
+     sizeof(xtensa_insnbuf_word))
 #define MAX_INSN_SLOTS 32
 #define MAX_OPCODE_ARGS 16
 #define MAX_NAREG 64
@@ -569,7 +572,7 @@ void xtensa_cpu_dump_state(CPUState *cpu, FILE *f, int flags);
 hwaddr xtensa_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
 void xtensa_count_regs(const XtensaConfig *config,
                        unsigned *n_regs, unsigned *n_core_regs);
-int xtensa_cpu_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg);
+int xtensa_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 int xtensa_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
 void xtensa_cpu_do_unaligned_access(CPUState *cpu, vaddr addr,
                                     MMUAccessType access_type,

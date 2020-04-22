@@ -53,21 +53,57 @@ poke_file()
     printf "$3" | dd "of=$1" bs=1 "seek=$2" conv=notrunc &>/dev/null
 }
 
+# poke_file_le $img_filename $offset $byte_width $value
+# Example: poke_file_le "$TEST_IMG" 512 2 65534
+poke_file_le()
+{
+    local img=$1 ofs=$2 len=$3 val=$4 str=''
+
+    while ((len--)); do
+        str+=$(printf '\\x%02x' $((val & 0xff)))
+        val=$((val >> 8))
+    done
+
+    poke_file "$img" "$ofs" "$str"
+}
+
+# poke_file_be $img_filename $offset $byte_width $value
+# Example: poke_file_be "$TEST_IMG" 512 2 65279
+poke_file_be()
+{
+    local img=$1 ofs=$2 len=$3 val=$4
+    local str=$(printf "%0$((len * 2))x\n" $val | sed 's/\(..\)/\\x\1/g')
+
+    poke_file "$img" "$ofs" "$str"
+}
+
 # peek_file_le 'test.img' 512 2 => 65534
 peek_file_le()
 {
-    # Wrap in echo $() to strip spaces
-    echo $(od -j"$2" -N"$3" --endian=little -An -vtu"$3" "$1")
+    local val=0 shift=0 byte
+
+    # coreutils' od --endian is not portable, so manually assemble bytes.
+    for byte in $(od -j"$2" -N"$3" -An -v -tu1 "$1"); do
+        val=$(( val | (byte << shift) ))
+        shift=$((shift + 8))
+    done
+    printf %llu $val
 }
 
 # peek_file_be 'test.img' 512 2 => 65279
 peek_file_be()
 {
-    # Wrap in echo $() to strip spaces
-    echo $(od -j"$2" -N"$3" --endian=big -An -vtu"$3" "$1")
+    local val=0 byte
+
+    # coreutils' od --endian is not portable, so manually assemble bytes.
+    for byte in $(od -j"$2" -N"$3" -An -v -tu1 "$1"); do
+        val=$(( (val << 8) | byte ))
+    done
+    printf %llu $val
 }
 
-# peek_file_raw 'test.img' 512 2 => '\xff\xfe'
+# peek_file_raw 'test.img' 512 2 => '\xff\xfe'. Do not use if the raw data
+# is likely to contain \0 or trailing \n.
 peek_file_raw()
 {
     dd if="$1" bs=1 skip="$2" count="$3" status=none
