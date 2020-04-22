@@ -466,9 +466,16 @@ static inline int get_memset_num_threads(int smp_cpus)
 static bool touch_all_pages(char *area, size_t hpagesize, size_t numpages,
                             int smp_cpus)
 {
+    static gsize initialized = 0;
     size_t numpages_per_thread, leftover;
     char *addr = area;
     int i = 0;
+
+    if (g_once_init_enter(&initialized)) {
+        qemu_mutex_init(&page_mutex);
+        qemu_cond_init(&page_cond);
+        g_once_init_leave(&initialized, 1);
+    }
 
     memset_thread_failed = false;
     threads_created_flag = false;
@@ -485,8 +492,11 @@ static bool touch_all_pages(char *area, size_t hpagesize, size_t numpages,
                            QEMU_THREAD_JOINABLE);
         addr += memset_thread[i].numpages * hpagesize;
     }
+
+    qemu_mutex_lock(&page_mutex);
     threads_created_flag = true;
     qemu_cond_broadcast(&page_cond);
+    qemu_mutex_unlock(&page_mutex);
 
     for (i = 0; i < memset_num_threads; i++) {
         qemu_thread_join(&memset_thread[i].pgthread);

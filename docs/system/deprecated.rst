@@ -180,27 +180,67 @@ QEMU Machine Protocol (QMP) commands
 
 Use ``blockdev-change-medium`` or ``change-vnc-password`` instead.
 
+``blockdev-open-tray``, ``blockdev-close-tray`` argument ``device`` (since 2.8.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use argument ``id`` instead.
+
+``eject`` argument ``device`` (since 2.8.0)
+'''''''''''''''''''''''''''''''''''''''''''
+
+Use argument ``id`` instead.
+
+``blockdev-change-medium`` argument ``device`` (since 2.8.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use argument ``id`` instead.
+
+``block_set_io_throttle`` argument ``device`` (since 2.8.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use argument ``id`` instead.
+
 ``migrate_set_downtime`` and ``migrate_set_speed`` (since 2.8.0)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 Use ``migrate-set-parameters`` instead.
+
+``query-named-block-nodes`` result ``encryption_key_missing`` (since 2.10.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Always false.
+
+``query-block`` result ``inserted.encryption_key_missing`` (since 2.10.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Always false.
+
+``blockdev-add`` empty string argument ``backing`` (since 2.10.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use argument value ``null`` instead.
 
 ``migrate-set-cache-size`` and ``query-migrate-cache-size`` (since 2.11.0)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 Use ``migrate-set-parameters`` and ``query-migrate-parameters`` instead.
 
+``block-commit`` arguments ``base`` and ``top`` (since 3.1.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use arguments ``base-node`` and ``top-node`` instead.
+
 ``object-add`` option ``props`` (since 5.0)
 '''''''''''''''''''''''''''''''''''''''''''
 
 Specify the properties for the object as top-level arguments instead.
 
-``query-block`` result field ``dirty-bitmaps[i].status`` (since 4.0)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+``query-named-block-nodes`` and ``query-block`` result dirty-bitmaps[i].status (since 4.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The ``status`` field of the ``BlockDirtyInfo`` structure, returned by
-the query-block command is deprecated. Two new boolean fields,
-``recording`` and ``busy`` effectively replace it.
+these commands is deprecated. Two new boolean fields, ``recording`` and
+``busy`` effectively replace it.
 
 ``query-block`` result field ``dirty-bitmaps`` (Since 4.2)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -248,12 +288,6 @@ the 'wait' field, which is only applicable to sockets in server mode
 Human Monitor Protocol (HMP) commands
 -------------------------------------
 
-The ``hub_id`` parameter of ``hostfwd_add`` / ``hostfwd_remove`` (since 3.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The ``[hub_id name]`` parameter tuple of the 'hostfwd_add' and
-'hostfwd_remove' HMP commands has been replaced by ``netdev_id``.
-
 ``cpu-add`` (since 4.0)
 '''''''''''''''''''''''
 
@@ -294,6 +328,21 @@ RISC-V ISA CPUs (since 4.1)
 The RISC-V no MMU cpus have been depcreated. The two CPUs: ``rv32imacu-nommu`` and
 ``rv64imacu-nommu`` should no longer be used. Instead the MMU status can be specified
 via the CPU ``mmu`` option when using the ``rv32`` or ``rv64`` CPUs.
+
+``compat`` property of server class POWER CPUs (since 5.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``compat`` property used to set backwards compatibility modes for
+the processor has been deprecated. The ``max-cpu-compat`` property of
+the ``pseries`` machine type should be used instead.
+
+KVM guest support on 32-bit Arm hosts (since 5.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''
+
+The Linux kernel has dropped support for allowing 32-bit Arm systems
+to host KVM guests as of the 5.7 kernel. Accordingly, QEMU is deprecating
+its support for this configuration and will remove it in a future version.
+Running 32-bit guests on a 64-bit Arm host remains supported.
 
 System emulator devices
 -----------------------
@@ -429,6 +478,15 @@ QEMU Machine Protocol (QMP) commands
 
 The "autoload" parameter has been ignored since 2.12.0. All bitmaps
 are automatically loaded from qcow2 images.
+
+Human Monitor Protocol (HMP) commands
+-------------------------------------
+
+The ``hub_id`` parameter of ``hostfwd_add`` / ``hostfwd_remove`` (removed in 5.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``[hub_id name]`` parameter tuple of the 'hostfwd_add' and
+'hostfwd_remove' HMP commands has been replaced by ``netdev_id``.
 
 Related binaries
 ----------------

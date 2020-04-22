@@ -325,7 +325,7 @@ static void vhost_vsock_device_realize(DeviceState *dev, Error **errp)
     } else {
         vhostfd = open("/dev/vhost-vsock", O_RDWR);
         if (vhostfd < 0) {
-            error_setg_errno(errp, -errno,
+            error_setg_errno(errp, errno,
                              "vhost-vsock: failed to open vhost device");
             return;
         }
@@ -364,12 +364,16 @@ static void vhost_vsock_device_realize(DeviceState *dev, Error **errp)
 
 err_vhost_dev:
     vhost_dev_cleanup(&vsock->vhost_dev);
+    /* vhost_dev_cleanup() closes the vhostfd passed to vhost_dev_init() */
+    vhostfd = -1;
 err_virtio:
     virtio_delete_queue(vsock->recv_vq);
     virtio_delete_queue(vsock->trans_vq);
     virtio_delete_queue(vsock->event_vq);
     virtio_cleanup(vdev);
-    close(vhostfd);
+    if (vhostfd >= 0) {
+        close(vhostfd);
+    }
     return;
 }
 

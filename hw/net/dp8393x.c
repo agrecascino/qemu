@@ -414,7 +414,7 @@ static void dp8393x_do_stop_timer(dp8393xState *s)
     dp8393x_update_wt_regs(s);
 }
 
-static int dp8393x_can_receive(NetClientState *nc);
+static bool dp8393x_can_receive(NetClientState *nc);
 
 static void dp8393x_do_receiver_enable(dp8393xState *s)
 {
@@ -525,8 +525,8 @@ static void dp8393x_do_transmit_packets(dp8393xState *s)
                                  * (4 + 3 * s->regs[SONIC_TFC]),
                                MEMTXATTRS_UNSPECIFIED, s->data,
                                size);
-            s->regs[SONIC_CTDA] = dp8393x_get(s, width, 0) & ~0x1;
-            if (dp8393x_get(s, width, 0) & SONIC_DESC_EOL) {
+            s->regs[SONIC_CTDA] = dp8393x_get(s, width, 0);
+            if (s->regs[SONIC_CTDA] & SONIC_DESC_EOL) {
                 /* EOL detected */
                 break;
             }
@@ -718,13 +718,11 @@ static void dp8393x_watchdog(void *opaque)
     dp8393x_update_irq(s);
 }
 
-static int dp8393x_can_receive(NetClientState *nc)
+static bool dp8393x_can_receive(NetClientState *nc)
 {
     dp8393xState *s = qemu_get_nic_opaque(nc);
 
-    if (!(s->regs[SONIC_CR] & SONIC_CR_RXEN))
-        return 0;
-    return 1;
+    return !!(s->regs[SONIC_CR] & SONIC_CR_RXEN);
 }
 
 static int dp8393x_receive_filter(dp8393xState *s, const uint8_t * buf,
@@ -986,13 +984,12 @@ static void dp8393x_realize(DeviceState *dev, Error **errp)
 
     s->watchdog = timer_new_ns(QEMU_CLOCK_VIRTUAL, dp8393x_watchdog, s);
 
-    memory_region_init_ram(&s->prom, OBJECT(dev),
-                           "dp8393x-prom", SONIC_PROM_SIZE, &local_err);
+    memory_region_init_rom(&s->prom, OBJECT(dev), "dp8393x-prom",
+                           SONIC_PROM_SIZE, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return;
     }
-    memory_region_set_readonly(&s->prom, true);
     prom = memory_region_get_ram_ptr(&s->prom);
     checksum = 0;
     for (i = 0; i < 6; i++) {

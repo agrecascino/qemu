@@ -177,7 +177,7 @@ static ssize_t qcow2_crypto_hdr_write_func(QCryptoBlock *block, size_t offset,
 }
 
 
-/* 
+/*
  * read qcow2 extension and fill bs
  * start reading from start_offset
  * finish reading upon magic of value 0 or when end_offset reached
@@ -1758,6 +1758,7 @@ static int coroutine_fn qcow2_do_open(BlockDriverState *bs, QDict *options,
     g_free(s->image_data_file);
     if (has_data_file(bs)) {
         bdrv_unref_child(bs, s->data_file);
+        s->data_file = NULL;
     }
     g_free(s->unknown_header_fields);
     cleanup_unknown_header_ext(bs);
@@ -2610,6 +2611,7 @@ static void qcow2_close(BlockDriverState *bs)
 
     qcrypto_block_free(s->crypto);
     s->crypto = NULL;
+    qapi_free_QCryptoBlockOpenOptions(s->crypto_opts);
 
     g_free(s->unknown_header_fields);
     cleanup_unknown_header_ext(bs);
@@ -2620,6 +2622,7 @@ static void qcow2_close(BlockDriverState *bs)
 
     if (has_data_file(bs)) {
         bdrv_unref_child(bs, s->data_file);
+        s->data_file = NULL;
     }
 
     qcow2_refcount_close(bs);
@@ -2820,9 +2823,16 @@ int qcow2_update_header(BlockDriverState *bs)
         buflen -= ret;
     }
 
-    /* Feature table */
-    if (s->qcow_version >= 3) {
-        Qcow2Feature features[] = {
+    /*
+     * Feature table.  A mere 8 feature names occupies 392 bytes, and
+     * when coupled with the v3 minimum header of 104 bytes plus the
+     * 8-byte end-of-extension marker, that would leave only 8 bytes
+     * for a backing file name in an image with 512-byte clusters.
+     * Thus, we choose to omit this header for cluster sizes 4k and
+     * smaller.
+     */
+    if (s->qcow_version >= 3 && s->cluster_size > 4096) {
+        static const Qcow2Feature features[] = {
             {
                 .type = QCOW2_FEAT_TYPE_INCOMPATIBLE,
                 .bit  = QCOW2_INCOMPAT_DIRTY_BITNR,
@@ -2842,6 +2852,16 @@ int qcow2_update_header(BlockDriverState *bs)
                 .type = QCOW2_FEAT_TYPE_COMPATIBLE,
                 .bit  = QCOW2_COMPAT_LAZY_REFCOUNTS_BITNR,
                 .name = "lazy refcounts",
+            },
+            {
+                .type = QCOW2_FEAT_TYPE_AUTOCLEAR,
+                .bit  = QCOW2_AUTOCLEAR_BITMAPS_BITNR,
+                .name = "bitmaps",
+            },
+            {
+                .type = QCOW2_FEAT_TYPE_AUTOCLEAR,
+                .bit  = QCOW2_AUTOCLEAR_DATA_FILE_RAW_BITNR,
+                .name = "raw external data",
             },
         };
 
@@ -3252,7 +3272,7 @@ qcow2_co_create(BlockdevCreateOptions *create_options, Error **errp)
      * inconsistency later.
      *
      * We do need a refcount table because growing the refcount table means
-     * allocating two new refcount blocks - the seconds of which would be at
+     * allocating two new refcount blocks - the second of which would be at
      * 2 GB for 64k clusters, and we don't want to have a 2 GB initial file
      * size for any qcow2 image.
      */
@@ -3497,7 +3517,7 @@ qcow2_co_create(BlockdevCreateOptions *create_options, Error **errp)
         goto out;
     }
 
-    /* Want a backing file? There you go.*/
+    /* Want a backing file? There you go. */
     if (qcow2_opts->has_backing_file) {
         const char *backing_format = NULL;
 
@@ -3555,7 +3575,9 @@ out:
     return ret;
 }
 
-static int coroutine_fn qcow2_co_create_opts(const char *filename, QemuOpts *opts,
+static int coroutine_fn qcow2_co_create_opts(BlockDriver *drv,
+                                             const char *filename,
+                                             QemuOpts *opts,
                                              Error **errp)
 {
     BlockdevCreateOptions *create_options = NULL;
@@ -3761,6 +3783,12 @@ static coroutine_fn int qcow2_co_pdiscard(BlockDriverState *bs,
 {
     int ret;
     BDRVQcow2State *s = bs->opaque;
+
+    /* If the image does not support QCOW_OFLAG_ZERO then discarding
+     * clusters could expose stale data from the backing file. */
+    if (s->qcow_version < 3 && bs->backing) {
+        return -ENOTSUP;
+    }
 
     if (!QEMU_IS_ALIGNED(offset | bytes, s->cluster_size)) {
         assert(bytes < s->cluster_size);
@@ -4327,6 +4355,11 @@ qcow2_co_pwritev_compressed_part(BlockDriverState *bs,
         return -EINVAL;
     }
 
+    if (offset_into_cluster(s, bytes) &&
+        (offset + bytes) != (bs->total_sectors << BDRV_SECTOR_BITS)) {
+        return -EINVAL;
+    }
+
     while (bytes && aio_task_pool_status(aio) == 0) {
         uint64_t chunk_size = MIN(bytes, s->cluster_size);
 
@@ -4608,60 +4641,6 @@ static coroutine_fn int qcow2_co_flush_to_os(BlockDriverState *bs)
     return ret;
 }
 
-static ssize_t qcow2_measure_crypto_hdr_init_func(QCryptoBlock *block,
-        size_t headerlen, void *opaque, Error **errp)
-{
-    size_t *headerlenp = opaque;
-
-    /* Stash away the payload size */
-    *headerlenp = headerlen;
-    return 0;
-}
-
-static ssize_t qcow2_measure_crypto_hdr_write_func(QCryptoBlock *block,
-        size_t offset, const uint8_t *buf, size_t buflen,
-        void *opaque, Error **errp)
-{
-    /* Discard the bytes, we're not actually writing to an image */
-    return buflen;
-}
-
-/* Determine the number of bytes for the LUKS payload */
-static bool qcow2_measure_luks_headerlen(QemuOpts *opts, size_t *len,
-                                         Error **errp)
-{
-    QDict *opts_qdict;
-    QDict *cryptoopts_qdict;
-    QCryptoBlockCreateOptions *cryptoopts;
-    QCryptoBlock *crypto;
-
-    /* Extract "encrypt." options into a qdict */
-    opts_qdict = qemu_opts_to_qdict(opts, NULL);
-    qdict_extract_subqdict(opts_qdict, &cryptoopts_qdict, "encrypt.");
-    qobject_unref(opts_qdict);
-
-    /* Build QCryptoBlockCreateOptions object from qdict */
-    qdict_put_str(cryptoopts_qdict, "format", "luks");
-    cryptoopts = block_crypto_create_opts_init(cryptoopts_qdict, errp);
-    qobject_unref(cryptoopts_qdict);
-    if (!cryptoopts) {
-        return false;
-    }
-
-    /* Fake LUKS creation in order to determine the payload size */
-    crypto = qcrypto_block_create(cryptoopts, "encrypt.",
-                                  qcow2_measure_crypto_hdr_init_func,
-                                  qcow2_measure_crypto_hdr_write_func,
-                                  len, errp);
-    qapi_free_QCryptoBlockCreateOptions(cryptoopts);
-    if (!crypto) {
-        return false;
-    }
-
-    qcrypto_block_free(crypto);
-    return true;
-}
-
 static BlockMeasureInfo *qcow2_measure(QemuOpts *opts, BlockDriverState *in_bs,
                                        Error **errp)
 {
@@ -4712,9 +4691,27 @@ static BlockMeasureInfo *qcow2_measure(QemuOpts *opts, BlockDriverState *in_bs,
     g_free(optstr);
 
     if (has_luks) {
+        g_autoptr(QCryptoBlockCreateOptions) create_opts = NULL;
+        QDict *opts_qdict;
+        QDict *cryptoopts;
         size_t headerlen;
 
-        if (!qcow2_measure_luks_headerlen(opts, &headerlen, &local_err)) {
+        opts_qdict = qemu_opts_to_qdict(opts, NULL);
+        qdict_extract_subqdict(opts_qdict, &cryptoopts, "encrypt.");
+        qobject_unref(opts_qdict);
+
+        qdict_put_str(cryptoopts, "format", "luks");
+
+        create_opts = block_crypto_create_opts_init(cryptoopts, errp);
+        qobject_unref(cryptoopts);
+        if (!create_opts) {
+            goto err;
+        }
+
+        if (!qcrypto_block_calculate_payload_offset(create_opts,
+                                                    "encrypt.",
+                                                    &headerlen,
+                                                    &local_err)) {
             goto err;
         }
 
@@ -4846,6 +4843,7 @@ static ImageInfoSpecific *qcow2_get_specific_info(BlockDriverState *bs,
         if (local_err) {
             error_propagate(errp, local_err);
             qapi_free_ImageInfoSpecific(spec_info);
+            qapi_free_QCryptoBlockInfo(encrypt_info);
             return NULL;
         }
         *spec_info->u.qcow2.data = (ImageInfoSpecificQCow2){

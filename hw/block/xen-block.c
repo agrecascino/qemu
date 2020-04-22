@@ -860,7 +860,7 @@ static XenBlockIOThread *xen_block_iothread_create(const char *id,
     XenBlockIOThread *iothread = g_new(XenBlockIOThread, 1);
     Error *local_err = NULL;
     QDict *opts;
-    QObject *ret_data;
+    QObject *ret_data = NULL;
 
     iothread->id = g_strdup(id);
 
@@ -998,29 +998,27 @@ static void xen_block_device_destroy(XenBackendInstance *backend,
     XenBlockVdev *vdev = &blockdev->props.vdev;
     XenBlockDrive *drive = blockdev->drive;
     XenBlockIOThread *iothread = blockdev->iothread;
+    Error *local_err = NULL;
 
     trace_xen_block_device_destroy(vdev->number);
 
     object_unparent(OBJECT(xendev));
 
     if (iothread) {
-        Error *local_err = NULL;
-
         xen_block_iothread_destroy(iothread, &local_err);
         if (local_err) {
             error_propagate_prepend(errp, local_err,
-                                "failed to destroy iothread: ");
+                                    "failed to destroy iothread: ");
             return;
         }
     }
 
     if (drive) {
-        Error *local_err = NULL;
-
         xen_block_drive_destroy(drive, &local_err);
         if (local_err) {
             error_propagate_prepend(errp, local_err,
-                                "failed to destroy drive: ");
+                                    "failed to destroy drive: ");
+            return;
         }
     }
 }

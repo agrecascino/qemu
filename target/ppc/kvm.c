@@ -88,6 +88,7 @@ static int cap_ppc_safe_indirect_branch;
 static int cap_ppc_count_cache_flush_assist;
 static int cap_ppc_nested_kvm_hv;
 static int cap_large_decr;
+static int cap_fwnmi;
 
 static uint32_t debug_inst_opcode;
 
@@ -136,6 +137,7 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
     kvmppc_get_cpu_characteristics(s);
     cap_ppc_nested_kvm_hv = kvm_vm_check_extension(s, KVM_CAP_PPC_NESTED_HV);
     cap_large_decr = kvmppc_get_dec_bits();
+    cap_fwnmi = kvm_vm_check_extension(s, KVM_CAP_PPC_FWNMI);
     /*
      * Note: setting it to false because there is not such capability
      * in KVM at this moment.
@@ -2064,6 +2066,11 @@ void kvmppc_set_mpic_proxy(PowerPCCPU *cpu, int mpic_proxy)
     }
 }
 
+bool kvmppc_get_fwnmi(void)
+{
+    return cap_fwnmi;
+}
+
 int kvmppc_set_fwnmi(void)
 {
     PowerPCCPU *cpu = POWERPC_CPU(first_cpu);
@@ -2113,7 +2120,7 @@ void kvmppc_error_append_smt_possible_hint(Error *const *errp)
 
 
 #ifdef TARGET_PPC64
-uint64_t kvmppc_rma_size(uint64_t current_size, unsigned int hash_shift)
+uint64_t kvmppc_vrma_limit(unsigned int hash_shift)
 {
     struct kvm_ppc_smmu_info info;
     long rampagesize, best_page_shift;
@@ -2140,8 +2147,7 @@ uint64_t kvmppc_rma_size(uint64_t current_size, unsigned int hash_shift)
         }
     }
 
-    return MIN(current_size,
-               1ULL << (best_page_shift + hash_shift - 7));
+    return 1ULL << (best_page_shift + hash_shift - 7);
 }
 #endif
 
@@ -2810,11 +2816,11 @@ int kvm_arch_msi_data_to_gsi(uint32_t data)
 #if defined(TARGET_PPC64)
 int kvm_handle_nmi(PowerPCCPU *cpu, struct kvm_run *run)
 {
-    bool recovered = run->flags & KVM_RUN_PPC_NMI_DISP_FULLY_RECOV;
+    uint16_t flags = run->flags & KVM_RUN_PPC_NMI_DISP_MASK;
 
     cpu_synchronize_state(CPU(cpu));
 
-    spapr_mce_req_event(cpu, recovered);
+    spapr_mce_req_event(cpu, flags == KVM_RUN_PPC_NMI_DISP_FULLY_RECOV);
 
     return 0;
 }

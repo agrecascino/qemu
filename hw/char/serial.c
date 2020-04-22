@@ -997,7 +997,7 @@ static void serial_io_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    memory_region_init_io(&s->io, NULL, &serial_io_ops, s, "serial", 8);
+    memory_region_init_io(&s->io, OBJECT(dev), &serial_io_ops, s, "serial", 8);
     sysbus_init_mmio(SYS_BUS_DEVICE(sio), &s->io);
     sysbus_init_irq(SYS_BUS_DEVICE(sio), &s->irq);
 }
@@ -1043,7 +1043,6 @@ static void serial_class_init(ObjectClass *klass, void* data)
     dc->user_creatable = false;
     dc->realize = serial_realize;
     dc->unrealize = serial_unrealize;
-    dc->vmsd = &vmstate_serial;
     device_class_set_props(dc, serial_properties);
 }
 
@@ -1106,11 +1105,22 @@ static void serial_mm_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    memory_region_init_io(&s->io, NULL, &serial_mm_ops[smm->endianness], smm,
-                          "serial", 8 << smm->regshift);
+    memory_region_init_io(&s->io, OBJECT(dev),
+                          &serial_mm_ops[smm->endianness], smm, "serial",
+                          8 << smm->regshift);
     sysbus_init_mmio(SYS_BUS_DEVICE(smm), &s->io);
     sysbus_init_irq(SYS_BUS_DEVICE(smm), &smm->serial.irq);
 }
+
+static const VMStateDescription vmstate_serial_mm = {
+    .name = "serial",
+    .version_id = 3,
+    .minimum_version_id = 2,
+    .fields = (VMStateField[]) {
+        VMSTATE_STRUCT(serial, SerialMM, 0, vmstate_serial, SerialState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 SerialMM *serial_mm_init(MemoryRegion *address_space,
                          hwaddr base, int regshift,
@@ -1161,6 +1171,7 @@ static void serial_mm_class_init(ObjectClass *oc, void *data)
 
     device_class_set_props(dc, serial_mm_properties);
     dc->realize = serial_mm_realize;
+    dc->vmsd = &vmstate_serial_mm;
 }
 
 static const TypeInfo serial_mm_info = {

@@ -647,9 +647,9 @@ static int collect_image_check(BlockDriverState *bs,
     check->leaks                    = result.leaks;
     check->has_leaks                = result.leaks != 0;
     check->corruptions_fixed        = result.corruptions_fixed;
-    check->has_corruptions_fixed    = result.corruptions != 0;
+    check->has_corruptions_fixed    = result.corruptions_fixed != 0;
     check->leaks_fixed              = result.leaks_fixed;
-    check->has_leaks_fixed          = result.leaks != 0;
+    check->has_leaks_fixed          = result.leaks_fixed != 0;
     check->image_end_offset         = result.image_end_offset;
     check->has_image_end_offset     = result.image_end_offset != 0;
     check->total_clusters           = result.bfi.total_clusters;
@@ -803,9 +803,12 @@ static int img_check(int argc, char **argv)
 
     if (check->corruptions_fixed || check->leaks_fixed) {
         int corruptions_fixed, leaks_fixed;
+        bool has_leaks_fixed, has_corruptions_fixed;
 
         leaks_fixed         = check->leaks_fixed;
+        has_leaks_fixed     = check->has_leaks_fixed;
         corruptions_fixed   = check->corruptions_fixed;
+        has_corruptions_fixed = check->has_corruptions_fixed;
 
         if (output_format == OFORMAT_HUMAN) {
             qprintf(quiet,
@@ -817,10 +820,14 @@ static int img_check(int argc, char **argv)
                     check->corruptions_fixed);
         }
 
+        qapi_free_ImageCheck(check);
+        check = g_new0(ImageCheck, 1);
         ret = collect_image_check(bs, check, filename, fmt, 0);
 
         check->leaks_fixed          = leaks_fixed;
+        check->has_leaks_fixed      = has_leaks_fixed;
         check->corruptions_fixed    = corruptions_fixed;
+        check->has_corruptions_fixed = has_corruptions_fixed;
     }
 
     if (!ret) {
@@ -882,9 +889,9 @@ static void run_block_job(BlockJob *job, Error **errp)
     do {
         float progress = 0.0f;
         aio_poll(aio_context, true);
-        if (job->job.progress_total) {
-            progress = (float)job->job.progress_current /
-                       job->job.progress_total * 100.f;
+        if (job->job.progress.total) {
+            progress = (float)job->job.progress.current /
+                       job->job.progress.total * 100.f;
         }
         qemu_progress_print(progress, 0);
     } while (!job_is_ready(&job->job) && !job_is_completed(&job->job));
@@ -1917,8 +1924,8 @@ retry:
         if (status == BLK_DATA && !copy_range) {
             ret = convert_co_read(s, sector_num, n, buf);
             if (ret < 0) {
-                error_report("error while reading sector %" PRId64
-                             ": %s", sector_num, strerror(-ret));
+                error_report("error while reading at byte %lld: %s",
+                             sector_num * BDRV_SECTOR_SIZE, strerror(-ret));
                 s->ret = ret;
             }
         } else if (!s->min_sparse && status == BLK_ZERO) {
@@ -1946,8 +1953,8 @@ retry:
                 ret = convert_co_write(s, sector_num, n, buf, status);
             }
             if (ret < 0) {
-                error_report("error while writing sector %" PRId64
-                             ": %s", sector_num, strerror(-ret));
+                error_report("error while writing at byte %lld: %s",
+                             sector_num * BDRV_SECTOR_SIZE, strerror(-ret));
                 s->ret = ret;
             }
         }
@@ -4932,10 +4939,8 @@ static int img_measure(int argc, char **argv)
         filename = argv[optind];
     }
 
-    if (!filename &&
-        (object_opts || image_opts || fmt || snapshot_name || sn_opts)) {
-        error_report("--object, --image-opts, -f, and -l "
-                     "require a filename argument.");
+    if (!filename && (image_opts || fmt || snapshot_name || sn_opts)) {
+        error_report("--image-opts, -f, and -l require a filename argument.");
         goto out;
     }
     if (filename && img_size != UINT64_MAX) {

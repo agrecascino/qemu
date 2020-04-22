@@ -363,6 +363,7 @@ char *bdrv_get_full_backing_filename(BlockDriverState *bs, Error **errp)
 
 void bdrv_register(BlockDriver *bdrv)
 {
+    assert(bdrv->format_name);
     QLIST_INSERT_HEAD(&bdrv_drivers, bdrv, list);
 }
 
@@ -482,7 +483,8 @@ static void coroutine_fn bdrv_create_co_entry(void *opaque)
     CreateCo *cco = opaque;
     assert(cco->drv);
 
-    ret = cco->drv->bdrv_co_create_opts(cco->filename, cco->opts, &local_err);
+    ret = cco->drv->bdrv_co_create_opts(cco->drv,
+                                        cco->filename, cco->opts, &local_err);
     error_propagate(&cco->err, local_err);
     cco->ret = ret;
 }
@@ -596,8 +598,15 @@ static int create_file_fallback_zero_first_sector(BlockBackend *blk,
     return 0;
 }
 
-static int bdrv_create_file_fallback(const char *filename, BlockDriver *drv,
-                                     QemuOpts *opts, Error **errp)
+/**
+ * Simple implementation of bdrv_co_create_opts for protocol drivers
+ * which only support creation via opening a file
+ * (usually existing raw storage device)
+ */
+int coroutine_fn bdrv_co_create_opts_simple(BlockDriver *drv,
+                                            const char *filename,
+                                            QemuOpts *opts,
+                                            Error **errp)
 {
     BlockBackend *blk;
     QDict *options;
@@ -661,11 +670,33 @@ int bdrv_create_file(const char *filename, QemuOpts *opts, Error **errp)
         return -ENOENT;
     }
 
-    if (drv->bdrv_co_create_opts) {
-        return bdrv_create(drv, filename, opts, errp);
-    } else {
-        return bdrv_create_file_fallback(filename, drv, opts, errp);
+    return bdrv_create(drv, filename, opts, errp);
+}
+
+int coroutine_fn bdrv_co_delete_file(BlockDriverState *bs, Error **errp)
+{
+    Error *local_err = NULL;
+    int ret;
+
+    assert(bs != NULL);
+
+    if (!bs->drv) {
+        error_setg(errp, "Block node '%s' is not opened", bs->filename);
+        return -ENOMEDIUM;
     }
+
+    if (!bs->drv->bdrv_co_delete_file) {
+        error_setg(errp, "Driver '%s' does not support image deletion",
+                   bs->drv->format_name);
+        return -ENOTSUP;
+    }
+
+    ret = bs->drv->bdrv_co_delete_file(bs, &local_err);
+    if (ret < 0) {
+        error_propagate(errp, local_err);
+    }
+
+    return ret;
 }
 
 /**
@@ -1564,9 +1595,9 @@ QemuOptsList bdrv_runtime_opts = {
     },
 };
 
-static QemuOptsList fallback_create_opts = {
-    .name = "fallback-create-opts",
-    .head = QTAILQ_HEAD_INITIALIZER(fallback_create_opts.head),
+QemuOptsList bdrv_create_opts_simple = {
+    .name = "simple-create-opts",
+    .head = QTAILQ_HEAD_INITIALIZER(bdrv_create_opts_simple.head),
     .desc = {
         {
             .name = BLOCK_OPT_SIZE,
@@ -1872,8 +1903,6 @@ static int bdrv_child_check_perm(BdrvChild *c, BlockReopenQueue *q,
                                  bool *tighten_restrictions, Error **errp);
 static void bdrv_child_abort_perm_update(BdrvChild *c);
 static void bdrv_child_set_perm(BdrvChild *c, uint64_t perm, uint64_t shared);
-static void bdrv_get_cumulative_perm(BlockDriverState *bs, uint64_t *perm,
-                                     uint64_t *shared_perm);
 
 typedef struct BlockReopenQueueEntry {
      bool prepared;
@@ -2097,8 +2126,8 @@ static void bdrv_set_perm(BlockDriverState *bs, uint64_t cumulative_perms,
     }
 }
 
-static void bdrv_get_cumulative_perm(BlockDriverState *bs, uint64_t *perm,
-                                     uint64_t *shared_perm)
+void bdrv_get_cumulative_perm(BlockDriverState *bs, uint64_t *perm,
+                              uint64_t *shared_perm)
 {
     BdrvChild *c;
     uint64_t cumulative_perms = 0;
@@ -2588,6 +2617,7 @@ BdrvChild *bdrv_root_attach_child(BlockDriverState *child_bs,
             error_propagate(errp, local_err);
             g_free(child);
             bdrv_abort_perm_update(child_bs);
+            bdrv_unref(child_bs);
             return NULL;
         }
     }
@@ -2735,10 +2765,10 @@ void bdrv_set_backing_hd(BlockDriverState *bs, BlockDriverState *backing_hd,
 
     if (bs->backing) {
         bdrv_unref_child(bs, bs->backing);
+        bs->backing = NULL;
     }
 
     if (!backing_hd) {
-        bs->backing = NULL;
         goto out;
     }
 
@@ -4367,6 +4397,7 @@ void bdrv_replace_node(BlockDriverState *from, BlockDriverState *to,
     bdrv_ref(from);
 
     assert(qemu_get_current_aio_context() == qemu_get_aio_context());
+    assert(bdrv_get_aio_context(from) == bdrv_get_aio_context(to));
     bdrv_drained_begin(from);
 
     /* Put all parents into @list and calculate their cumulative permissions */
@@ -5936,13 +5967,15 @@ void bdrv_img_create(const char *filename, const char *fmt,
         return;
     }
 
+    if (!proto_drv->create_opts) {
+        error_setg(errp, "Protocol driver '%s' does not support image creation",
+                   proto_drv->format_name);
+        return;
+    }
+
     /* Create parameter list */
     create_opts = qemu_opts_append(create_opts, drv->create_opts);
-    if (proto_drv->create_opts) {
-        create_opts = qemu_opts_append(create_opts, proto_drv->create_opts);
-    } else {
-        create_opts = qemu_opts_append(create_opts, &fallback_create_opts);
-    }
+    create_opts = qemu_opts_append(create_opts, proto_drv->create_opts);
 
     opts = qemu_opts_create(create_opts, NULL, 0, &error_abort);
 
