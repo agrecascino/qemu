@@ -93,6 +93,8 @@
 #include <linux/mtio.h>
 #include <linux/fs.h>
 #include <linux/fd.h>
+#include <libdrm/drm.h>
+#include <libdrm/amdgpu_drm.h>
 #if defined(CONFIG_FIEMAP)
 #include <linux/fiemap.h>
 #endif
@@ -4607,6 +4609,142 @@ static abi_long do_ioctl_ifconf(const IOCTLEntry *ie, uint8_t *buf_temp,
     return ret;
 }
 
+struct drm_version_32 {
+    int version_major;
+    int version_minor;
+    int version_patchlevel;
+    unsigned int name_len;
+    unsigned int name;
+    unsigned int date_len;
+    unsigned int date;
+    unsigned int desc_len;
+    unsigned int desc;
+};
+
+/*void not_printf(char *ptr, unsigned long len) {
+    for(unsigned long i = 0; i < len; i++) {
+        printf("%c", ptr[i]);
+    }
+    printf("\n");
+}*/
+
+static abi_long
+do_ioctl_drm_ioctl_amdgpu_info(const IOCTLEntry *ie, uint8_t *buf_temp,
+                           int fd, int cmd, abi_long arg) {
+    abi_long ret;
+    int target_size = thunk_type_size(ie->arg_type, THUNK_TARGET);
+    void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    struct drm_amdgpu_info info;
+    memcpy(&info, argptr, sizeof(struct drm_amdgpu_info));
+    info.return_pointer = (unsigned long long)g2h(info.return_pointer);
+    ret = get_errno(safe_ioctl(fd, ie->host_cmd, &info));
+    memcpy(argptr, &info, sizeof(struct drm_amdgpu_info));
+    return ret;
+}
+
+static abi_long
+do_ioctl_drm_ioctl_amdgpu_bo_list(const IOCTLEntry *ie, uint8_t *buf_temp,
+                           int fd, int cmd, abi_long arg) {
+    abi_long ret;
+    int target_size = thunk_type_size(ie->arg_type, THUNK_TARGET);
+    void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    union drm_amdgpu_bo_list list;
+    memcpy(&list, argptr, sizeof(union drm_amdgpu_bo_list));
+    list.in.bo_info_ptr = (unsigned long long)g2h(list.in.bo_info_ptr);
+    ret = get_errno(safe_ioctl(fd, ie->host_cmd, &list));
+    memcpy(argptr, &list, sizeof(union drm_amdgpu_bo_list));
+    return ret;
+}
+
+static abi_long
+do_ioctl_drm_ioctl_amdgpu_cs(const IOCTLEntry *ie, uint8_t *buf_temp,
+                           int fd, int cmd, abi_long arg) {
+    abi_long ret;
+    int target_size = thunk_type_size(ie->arg_type, THUNK_TARGET);
+    void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    union drm_amdgpu_cs cs;
+    memcpy(&cs, argptr, sizeof(union drm_amdgpu_cs));
+    cs.in.chunks = (unsigned long)g2h(cs.in.chunks);
+    struct drm_amdgpu_cs_chunk **ptr = (struct drm_amdgpu_cs_chunk **)cs.in.chunks;
+    for(unsigned i = 0; i < cs.in.num_chunks; i++) {
+        ptr[i] = g2h((unsigned long)ptr[i]);
+        (*ptr[i]).chunk_data = (unsigned long)g2h((unsigned long)(*ptr[i]).chunk_data);
+    }
+    ret = get_errno(safe_ioctl(fd, ie->host_cmd, &cs));
+    memcpy(argptr, &cs, sizeof(union drm_amdgpu_cs));
+    return ret;
+}
+
+static abi_long
+do_ioctl_drm_ioctl_amdgpu_gem_mmap(const IOCTLEntry *ie, uint8_t *buf_temp,
+                           int fd, int cmd, abi_long arg) {
+    abi_long ret;
+    int target_size = thunk_type_size(ie->arg_type + 1, THUNK_TARGET);
+    errno = 0;
+    void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    union drm_amdgpu_gem_mmap map = *(union drm_amdgpu_gem_mmap*)argptr;
+    ret = get_errno(safe_ioctl(fd, ie->host_cmd, &map));
+    memcpy(argptr, &map, target_size);
+    return ret;
+}
+
+
+static abi_long
+do_ioctl_drm_ioctl_version(const IOCTLEntry *ie, uint8_t *buf_temp,
+                           int fd, int cmd, abi_long arg) {
+    abi_long ret;
+    int target_size = thunk_type_size(ie->arg_type, THUNK_TARGET);
+    void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    struct drm_version vhost;
+    #if TARGET_LONG_BITS == 64 
+    struct drm_version *vtarget = argptr;
+    vhost.version_major = vtarget->version_major;
+    vhost.version_minor = vtarget->version_minor;
+    vhost.version_patchlevel = vtarget->version_patchlevel;
+    vhost.name_len = vtarget->name_len;
+    vhost.name = vtarget->name;
+    vhost.date_len = vtarget->date_len;
+    vhost.date = vtarget->date;
+    vhost.desc_len = vtarget->desc_len;
+    vhost.desc = vtarget->desc;
+    #endif
+    #if TARGET_LONG_BITS == 32
+    struct drm_version_32 *vtarget = argptr;
+    vhost.version_major = vtarget->version_major;
+    vhost.version_minor = vtarget->version_minor;
+    vhost.version_patchlevel = vtarget->version_patchlevel;
+    vhost.name_len = vtarget->name_len;
+    vhost.name = g2h(vtarget->name);
+    vhost.date_len = vtarget->date_len;
+    vhost.date = g2h(vtarget->date);
+    vhost.desc_len = vtarget->desc_len;
+    vhost.desc = g2h(vtarget->desc);
+
+    #endif
+    ret = get_errno(safe_ioctl(fd, ie->host_cmd, &vhost));
+    /*not_printf(vhost.name, vhost.name_len);
+    not_printf(vhost.date, vhost.date_len);
+    not_printf(vhost.desc, vhost.desc_len);
+    printf("%d\n", vhost.version_major);
+    printf("%d\n", vhost.version_minor);
+    printf("%d\n", vhost.version_patchlevel);
+    printf("%lu\n", vhost.name_len);
+    printf("%lu\n", vhost.date_len);
+    printf("%lu\n", vhost.desc_len);*/
+    #if TARGET_LONG_BITS == 64 
+    *vtarget = vhost;
+    #endif
+    #if TARGET_LONG_BITS == 32
+    vtarget->version_major = vhost.version_major;
+    vtarget->version_minor = vhost.version_minor;
+    vtarget->version_patchlevel = vhost.version_patchlevel;
+    vtarget->name_len = vhost.name_len;
+    vtarget->date_len = vhost.date_len;
+    vtarget->desc_len = vhost.desc_len;
+    #endif
+    return ret;
+}
+
 #if defined(CONFIG_USBFS)
 #if HOST_LONG_BITS > 64
 #error USBDEVFS thunks do not support >64 bit hosts yet.
@@ -8918,7 +9056,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
         ret = target_mmap(arg1, arg2, arg3,
                           target_to_host_bitmask(arg4, mmap_flags_tbl),
-                          arg5, arg6 << MMAP_SHIFT);
+                          arg5, ((uint64_t) arg6) << MMAP_SHIFT);
         return get_errno(ret);
 #endif
     case TARGET_NR_munmap:

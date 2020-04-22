@@ -357,10 +357,10 @@ abi_ulong mmap_find_vma(abi_ulong start, abi_ulong size, abi_ulong align)
 
 /* NOTE: all the constants are the HOST ones */
 abi_long target_mmap(abi_ulong start, abi_ulong len, int prot,
-                     int flags, int fd, abi_ulong offset)
+                     int flags, int fd, uint64_t offset)
 {
-    abi_ulong ret, end, real_start, real_end, retaddr, host_offset, host_len;
-
+    abi_ulong ret, end, real_start, real_end, retaddr, host_len;
+    uint64_t host_offset;
     mmap_lock();
     trace_target_mmap(start, len, prot, flags, fd, offset);
 
