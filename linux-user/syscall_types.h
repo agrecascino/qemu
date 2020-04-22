@@ -243,6 +243,91 @@ STRUCT(fb_con2fbmap,
        TYPE_INT, /* console     */
        TYPE_INT) /* framebuffer */
 
+STRUCT(drm_version,
+	 TYPE_INT, /* version_major */
+	 TYPE_INT, /* version_minor */
+	 TYPE_INT, /* version_patchlevel */
+	 TYPE_ULONG, /* name_len */
+	 TYPE_PTRVOID, /* name */
+	 TYPE_ULONG, /* date_len */
+	 TYPE_PTRVOID, /* date */
+	 TYPE_ULONG, /* desc_len */
+	 TYPE_PTRVOID) /* desc */
+
+STRUCT(drm_auth, 
+       TYPE_INT) /* magic */
+
+STRUCT(drm_client,
+       TYPE_INT, /* idx */
+       TYPE_INT, /* auth */
+       TYPE_ULONG, /* pid */
+       TYPE_ULONG, /* uid */
+       TYPE_ULONG, /* magic */
+       TYPE_ULONG) /* iocs */
+
+STRUCT(drm_get_cap, 
+       TYPE_ULONGLONG, /* capability */
+       TYPE_ULONGLONG) /* value */
+
+STRUCT(drm_amdgpu_gem_create, /* union */
+       TYPE_ULONGLONG,
+       TYPE_ULONGLONG,
+       TYPE_ULONGLONG,
+       TYPE_ULONGLONG)
+
+STRUCT(drm_amdgpu_info,
+       TYPE_ULONGLONG, /* return_pointer */
+       TYPE_INT, /* return_size */
+       TYPE_INT, /* query */
+       TYPE_INT, /* anonymous union */
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT)
+
+STRUCT(drm_amdgpu_gem_va,
+       TYPE_INT, /* handle */
+       TYPE_INT, /* _pad */
+       TYPE_INT, /* operation */
+       TYPE_INT, /* flags */
+       TYPE_ULONGLONG, /* va_address */
+       TYPE_ULONGLONG, /* offset_in_bo */
+       TYPE_ULONGLONG) /* map_size */
+
+STRUCT(drm_amdgpu_cs, 
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_ULONGLONG)
+
+STRUCT(drm_amdgpu_wait_cs, /* union */
+       TYPE_ULONGLONG,
+       TYPE_ULONGLONG,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT)
+
+STRUCT(drm_amdgpu_ctx, /* union */
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT)
+
+STRUCT(drm_gem_close,
+       TYPE_INT, /* handle */
+       TYPE_INT) /* pad */
+
+STRUCT(drm_amdgpu_gem_mmap,
+       TYPE_INT, /* handle */
+       TYPE_INT) /* pad */
+
+STRUCT(drm_amdgpu_bo_list, /* union */
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_INT,
+       TYPE_ULONGLONG)
 
 STRUCT(vt_stat,
        TYPE_SHORT, /* v_active */
@@ -255,6 +340,19 @@ STRUCT(vt_mode,
        TYPE_SHORT, /* relsig */
        TYPE_SHORT, /* acqsig */
        TYPE_SHORT) /* frsig  */
+
+STRUCT(drm_amdgpu_gem_metadata,
+       TYPE_INT, /* handle */
+       TYPE_INT, /* op */
+       TYPE_ULONGLONG, /* flags */
+       TYPE_ULONGLONG, /* tiling_info */
+       TYPE_INT, /* data_size_bytes */
+       MK_ARRAY(TYPE_INT, 64)) /* data */
+
+STRUCT(drm_prime_handle,
+       TYPE_INT, /* handle */
+       TYPE_INT, /* flags */
+       TYPE_INT) /* fd */
 
 STRUCT(dm_ioctl,
        MK_ARRAY(TYPE_INT, 3), /* version */
