@@ -4749,6 +4749,9 @@ do_ioctl_drm_ioctl_amdgpu_cs(const IOCTLEntry *ie, uint8_t *buf_temp,
     for(unsigned i = 0; i < cs.in.num_chunks; i++) {
         ptr[i] = g2h((unsigned long)ptr[i]);
         (*ptr[i]).chunk_data = (unsigned long)g2h((unsigned long)(*ptr[i]).chunk_data);
+        if ((*ptr[i]).chunk_id == AMDGPU_CHUNK_ID_BO_HANDLES) {
+          ((struct drm_amdgpu_bo_list_in *)((*ptr[i]).chunk_data))->bo_info_ptr = (unsigned long)g2h(((unsigned long) ((struct drm_amdgpu_bo_list_in *)((*ptr[i]).chunk_data))->bo_info_ptr));
+        }
     }
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &cs));
     memcpy(argptr, &cs, sizeof(union drm_amdgpu_cs));
