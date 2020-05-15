@@ -4701,12 +4701,26 @@ struct drm_version_32 {
     unsigned int desc;
 };
 
-/*void not_printf(char *ptr, unsigned long len) {
-    for(unsigned long i = 0; i < len; i++) {
-        printf("%c", ptr[i]);
-    }
-    printf("\n");
-}*/
+struct drm_version_64 {
+    int version_major;
+    int version_minor;
+    int version_patchlevel;
+    unsigned long long name_len;
+    unsigned long long name;
+    unsigned long long date_len;
+    unsigned long long date;
+    unsigned long long desc_len;
+    unsigned long long desc;
+};
+
+#if TARGET_LONG_BITS == 32
+typedef struct drm_version_32 drm_version_target;
+#define target_ptr_swap tswap32
+#endif
+#if TARGET_LONG_BITS == 64
+typedef struct drm_version_64 drm_version_target;
+#define target_ptr_swap tswap64
+#endif
 
 static abi_long
 do_ioctl_drm_ioctl_amdgpu_info(const IOCTLEntry *ie, uint8_t *buf_temp,
@@ -4719,6 +4733,7 @@ do_ioctl_drm_ioctl_amdgpu_info(const IOCTLEntry *ie, uint8_t *buf_temp,
     info.return_pointer = (unsigned long long)g2h(info.return_pointer);
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &info));
     memcpy(argptr, &info, sizeof(struct drm_amdgpu_info));
+    unlock_user(argptr, arg, target_size);
     return ret;
 }
 
@@ -4733,6 +4748,7 @@ do_ioctl_drm_ioctl_amdgpu_bo_list(const IOCTLEntry *ie, uint8_t *buf_temp,
     list.in.bo_info_ptr = (unsigned long long)g2h(list.in.bo_info_ptr);
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &list));
     memcpy(argptr, &list, sizeof(union drm_amdgpu_bo_list));
+    unlock_user(argptr, arg, target_size);
     return ret;
 }
 
@@ -4755,6 +4771,7 @@ do_ioctl_drm_ioctl_amdgpu_cs(const IOCTLEntry *ie, uint8_t *buf_temp,
     }
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &cs));
     memcpy(argptr, &cs, sizeof(union drm_amdgpu_cs));
+    unlock_user(argptr, arg, target_size);
     return ret;
 }
 
@@ -4765,9 +4782,11 @@ do_ioctl_drm_ioctl_amdgpu_gem_mmap(const IOCTLEntry *ie, uint8_t *buf_temp,
     int target_size = thunk_type_size(ie->arg_type + 1, THUNK_TARGET);
     errno = 0;
     void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
-    union drm_amdgpu_gem_mmap map = *(union drm_amdgpu_gem_mmap*)argptr;
+    union drm_amdgpu_gem_mmap map;
+    memcpy(&map, argptr, sizeof(union drm_amdgpu_gem_mmap));
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &map));
     memcpy(argptr, &map, target_size);
+    unlock_user(argptr, arg, target_size);
     return ret;
 }
 
@@ -4779,52 +4798,26 @@ do_ioctl_drm_ioctl_version(const IOCTLEntry *ie, uint8_t *buf_temp,
     int target_size = thunk_type_size(ie->arg_type, THUNK_TARGET);
     void * argptr = lock_user(VERIFY_READ, arg, target_size, 1);
     struct drm_version vhost;
-    #if TARGET_LONG_BITS == 64 
-    struct drm_version *vtarget = argptr;
-    vhost.version_major = vtarget->version_major;
-    vhost.version_minor = vtarget->version_minor;
-    vhost.version_patchlevel = vtarget->version_patchlevel;
-    vhost.name_len = vtarget->name_len;
-    vhost.name = vtarget->name;
-    vhost.date_len = vtarget->date_len;
-    vhost.date = vtarget->date;
-    vhost.desc_len = vtarget->desc_len;
-    vhost.desc = vtarget->desc;
-    #endif
-    #if TARGET_LONG_BITS == 32
-    struct drm_version_32 *vtarget = argptr;
-    vhost.version_major = vtarget->version_major;
-    vhost.version_minor = vtarget->version_minor;
-    vhost.version_patchlevel = vtarget->version_patchlevel;
-    vhost.name_len = vtarget->name_len;
-    vhost.name = g2h(vtarget->name);
-    vhost.date_len = vtarget->date_len;
-    vhost.date = g2h(vtarget->date);
-    vhost.desc_len = vtarget->desc_len;
-    vhost.desc = g2h(vtarget->desc);
-
-    #endif
+    drm_version_target vtarget;
+    memcpy(&vtarget, argptr, sizeof(drm_version_target));
+    vhost.version_major = vtarget.version_major;
+    vhost.version_minor = vtarget.version_minor;
+    vhost.version_patchlevel = vtarget.version_patchlevel;
+    vhost.name_len = target_ptr_swap(vtarget.name_len);
+    vhost.name = g2h(target_ptr_swap(vtarget.name));
+    vhost.date_len = target_ptr_swap(vtarget.date_len);
+    vhost.date = g2h(target_ptr_swap(vtarget.date));
+    vhost.desc_len = target_ptr_swap(vtarget.desc_len);
+    vhost.desc = g2h(target_ptr_swap(vtarget.desc));
     ret = get_errno(safe_ioctl(fd, ie->host_cmd, &vhost));
-    /*not_printf(vhost.name, vhost.name_len);
-    not_printf(vhost.date, vhost.date_len);
-    not_printf(vhost.desc, vhost.desc_len);
-    printf("%d\n", vhost.version_major);
-    printf("%d\n", vhost.version_minor);
-    printf("%d\n", vhost.version_patchlevel);
-    printf("%lu\n", vhost.name_len);
-    printf("%lu\n", vhost.date_len);
-    printf("%lu\n", vhost.desc_len);*/
-    #if TARGET_LONG_BITS == 64 
-    *vtarget = vhost;
-    #endif
-    #if TARGET_LONG_BITS == 32
-    vtarget->version_major = vhost.version_major;
-    vtarget->version_minor = vhost.version_minor;
-    vtarget->version_patchlevel = vhost.version_patchlevel;
-    vtarget->name_len = vhost.name_len;
-    vtarget->date_len = vhost.date_len;
-    vtarget->desc_len = vhost.desc_len;
-    #endif
+    vtarget.version_major = tswap32(vhost.version_major);
+    vtarget.version_minor = tswap32(vhost.version_minor);
+    vtarget.version_patchlevel = tswap32(vhost.version_patchlevel);
+    vtarget.name_len = target_ptr_swap(vhost.name_len);
+    vtarget.date_len = target_ptr_swap(vhost.date_len);
+    vtarget.desc_len = target_ptr_swap(vhost.desc_len);
+    memcpy(argptr, &vtarget, sizeof(drm_version_target));
+    unlock_user(argptr, arg, target_size);
     return ret;
 }
 
