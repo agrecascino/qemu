@@ -4017,6 +4017,304 @@ int64_t tcg_cpu_exec_time(void)
 }
 #endif
 
+void Init_Graph(struct Graph* g) {
+    g->start.ptr.n = -1;
+    g->start.ptr.op = 0;
+    g->start.n_antecessors = 0;
+    g->start.n_successors = 0;
+    g->start.antecessors = 0;
+    g->start.successors = 0;
+    g->end.ptr.n = -1;
+    g->end.ptr.op = 0;
+    g->end.n_antecessors = 0;
+    g->end.n_successors = 0;
+    g->end.antecessors = 0;
+    g->end.successors = 0;
+}
+//Antecessor is "Real" in that it's already allocated, and as such we can add to it.
+//The successor is a dummy though, and is reallocated.
+struct Node* Attach_Node_Alloc(struct Node* antecessor, struct Node successor) {
+    //Normally we'd realloc, but we have to initally allocate the ptr array in this one.
+    if(!antecessor->n_successors) {
+        antecessor->n_successors++;
+        antecessor->successors = malloc(sizeof(void*));
+    } else {
+        antecessor->n_successors++;
+        antecessor->successors = realloc(antecessor->successors, sizeof(void*)*antecessor->n_successors);
+    }
+    //Pointer alloc finished, now we alloc the Node.
+    struct Node *n = malloc(sizeof(struct Node));
+    //We just alloc'd the node and as such we know it has trash pointers
+    n->antecessors = malloc(sizeof(void*));
+    n->n_antecessors = 1;
+    n->n_successors = 0;
+    n->successors = 0;
+    n->antecessors[0] = antecessor;
+    n->ptr = successor.ptr;
+    antecessor->successors[antecessor->n_successors - 1] = n;
+    return n;
+    
+}
+
+//Case in which both nodes already exist
+void Attach_Nodes(struct Node* antecessor, struct Node* successor) {
+    if(!antecessor->n_successors) {
+        antecessor->n_successors++;
+        antecessor->successors = malloc(sizeof(void*));
+    } else {
+        antecessor->n_successors++;
+        antecessor->successors = realloc(antecessor->successors, sizeof(void*)*antecessor->n_successors);
+    }
+    if(!successor->n_antecessors) {
+        successor->n_antecessors++;
+        successor->antecessors = malloc(sizeof(void*));
+    } else {
+        successor->n_antecessors++;
+        successor->antecessors = realloc(successor->antecessors, sizeof(void*)*successor->n_antecessors);
+    }
+    antecessor->successors[antecessor->n_successors - 1] = successor;
+    successor->antecessors[successor->n_antecessors - 1] = antecessor;
+}
+
+struct Node* search_down_nodes(struct Node* start, TCGArg arg, int limit_n) {
+    struct Node* n_last = 0;
+    for(int i = 0; i < start->n_successors; i++) {
+        struct Node *n = start->successors[i];
+        struct OrderedTCGOp ordered = n->ptr;
+        struct TCGOp *op = ordered.op;
+        const TCGOpDef * const def = &tcg_op_defs[op->opc];
+        int n_args = def->nb_iargs + def->nb_oargs;
+        if(n_args) {
+           if(op->args[0] == arg) {
+             if (((n_last && (ordered.n > n_last->ptr.n)) || !n_last) && (ordered.n < limit_n)) {
+                n_last = n;
+             } 
+           } 
+        }
+        struct Node *n_recurse = search_down_nodes(n, arg, limit_n);
+        struct OrderedTCGOp ordered_r = n->ptr;
+        if(n_recurse && ((n_last && (ordered_r.n > n_last->ptr.n)) || !n_last)) {
+            n_last = n_recurse;
+        }
+    }
+    return n_last;
+}
+
+struct Node* get_nth_node(struct Node* start, int n_lim) {
+    for(int i = 0; i < start->n_successors; i++) {
+        struct Node *n = start->successors[i];
+        struct OrderedTCGOp ordered = n->ptr;
+        if(ordered.n == n_lim)
+            return n;
+        struct Node *n_recurse = get_nth_node(n, n_lim);
+        if(!n_recurse)
+            continue;
+        struct OrderedTCGOp ordered_r = n_recurse->ptr;
+        if(ordered_r.n == n_lim) {
+            return n_recurse;
+        }
+    }
+    return 0;
+}
+
+uint8_t pathological_ops[] = {
+    1,
+    2,
+    3,
+    4,
+    38,
+    129,
+    130,
+    131,
+    132,
+    133,
+    135
+};
+
+int instruction_is_pathological(TCGOp *op) {
+    for(int i = 0; i < sizeof(pathological_ops); i++) {
+        if(op->opc == pathological_ops[i])
+            return true;
+    }
+    return false;
+}
+
+void free_graph(struct Graph g, int n_lim) {
+    /*struct Node **arr = malloc(sizeof(void*)*(n_lim+1));
+    for(int i = n_lim; i >= 0; i--) {
+        struct Node *n = get_nth_node(&g.start, i);
+        arr[i] = n;
+    }
+    for(int i = n_lim; i >= 0; i--) {
+        struct Node *n = arr[i];
+        if(n->antecessors)
+            free(n->antecessors);
+        if(n->successors)
+            free(n->successors);
+        free(n);
+    }
+    free(arr);*/
+};
+
+void sort_node_successors(struct Node* n) {
+    int n_lim = n->n_successors;
+    while(true) {
+        int swapped = false;
+        for(int i = 1; i < n_lim; i++) {
+            if(instruction_is_pathological(n->successors[i]->ptr.op) > instruction_is_pathological(n->successors[i-1]->ptr.op)) {
+                struct Node* n0 = n->successors[i];
+                struct Node* n1 = n->successors[i-1];
+                n->successors[i-1] = n0;
+                n->successors[i] = n1;
+                swapped = true;
+            }
+        }
+        if(!swapped)
+            break;
+    }
+    int n_pathological = 0;
+    for(int i = 0; i < n_lim; i++) {
+        if(instruction_is_pathological(n->successors[i]->ptr.op))
+            n_pathological++;
+    }
+    while(true) {
+        int swapped = false;
+        for(int i = 1; i < n_pathological; i++) {
+            if(n->successors[i]->ptr.n < n->successors[i-1]->ptr.n) {
+                struct Node* n0 = n->successors[i];
+                struct Node* n1 = n->successors[i-1];
+                n->successors[i-1] = n0;
+                n->successors[i] = n1;
+                swapped = true;
+            }
+        }
+        if(!swapped)
+            break;
+    }
+    //We've sorted the pathological operations to be the first in the array, and these operations by order.
+    //We now sort the remaining operations by the number of successors.
+    while(true) {
+        int swapped = false;
+        for(int i = n_pathological+1; i < n_lim; i++) {
+            if(n->successors[i]->n_successors > n->successors[i-1]->n_successors) {
+                struct Node* n0 = n->successors[i];
+                struct Node* n1 = n->successors[i-1];
+                n->successors[i-1] = n0;
+                n->successors[i] = n1;
+                swapped = true;
+            }
+        }
+        if(!swapped)
+            break;
+    }
+}
+
+void recursive_successor_scheduler(TCGOp *arr, int *is_sched, struct Node *n) {
+    sort_node_successors(n);
+    int n_lim = n->n_successors;
+    for(int i = 0; i < n_lim; i++) {
+        recursive_successor_scheduler(arr, is_sched, n->successors[i]);
+    }
+    if(n->ptr.n == -1) {
+        //We're done! We're now trying to schedule the root node, which like, doesn't do anything.
+        return;
+    }
+    if(!is_sched[n->ptr.n]) {
+        arr[n->ptr.n] = *(n->ptr.op);
+        is_sched[n->ptr.n] = 1;
+    }
+}
+
+void tcg_instruction_scheduler(TCGContext *s) {
+    struct Graph graph;
+    struct TCGOp *op;
+    Init_Graph(&graph);
+    int n = 0;
+    QTAILQ_FOREACH(op, &s->ops, link) {
+        const TCGOpDef * const def = &tcg_op_defs[op->opc];
+        int n_args = def->nb_iargs + def->nb_oargs;
+        //First node always has no dependencies, let's create it and be done.
+        if(!n) {
+            struct Node n0;
+            struct OrderedTCGOp ordered;
+            ordered.n = n;
+            ordered.op = op;
+            n0.ptr = ordered;
+            Attach_Node_Alloc(&graph.start, n0);
+            n++;
+            continue;   
+        }
+        struct Node* new_node = 0;
+        //Pathological instructions depend on all instructions previous to them.
+        if(instruction_is_pathological(op)) {
+            for(int i = 0; i < n; i++) {
+                struct Node *n2 = get_nth_node(&graph.start, i);
+                //Non-contiguous graph is _bad_.
+                assert(n2);
+                if(!i) {
+                    struct Node n1;
+                    n1.ptr.n = n;
+                    n1.ptr.op = op;
+                    new_node = Attach_Node_Alloc(n2, n1);
+                    continue;
+                }
+                Attach_Nodes(n2, new_node);
+            }
+            n++;
+            continue;
+        }
+        //Attach node to dependencies.
+        for(int i = 1; i < n_args; i++) {
+            TCGArg arg = op->args[i];
+            struct Node *searched = search_down_nodes(&graph.start, arg, n);
+            if(!searched)
+                continue;
+            if(!new_node) { 
+                struct Node n1;
+                n1.ptr.n = n;
+                n1.ptr.op = op;
+            	new_node = Attach_Node_Alloc(searched, n1);
+            } else {
+                Attach_Nodes(searched, new_node);
+            }
+        }
+        //No dependencies. Attach to start node.
+        if(!new_node) {
+            struct Node n1;
+            n1.ptr.n = n;
+            n1.ptr.op = op;
+            new_node = Attach_Node_Alloc(&graph.start, n1);
+        }
+        //If we've made it here, we now need to connect this node to all earlier pathological cases.
+        //EG: Branches, Memory Barriers, as they _CANNOT_ be reordered.
+        //Go from index 0 to n-1.
+        //n isn't a length, it's an iterator and zero-indexed.
+        for(int i = 0; i < n; i++) {
+            struct Node *n2 = get_nth_node(&graph.start, i);
+            //Non-contiguous graph is _bad_.
+            assert(n2);
+            struct TCGOp *path_op = n2->ptr.op;
+            if(instruction_is_pathological(path_op)) {
+                Attach_Nodes(n2, new_node);
+            }
+        }
+        n++;
+    }
+    struct TCGOp *oparray = malloc(sizeof(struct TCGOp*)*n);
+    int *is_sched = malloc(sizeof(int)*n);
+    memset(is_sched, 0, sizeof(int)*n);
+    recursive_successor_scheduler(oparray, is_sched, &graph.start);
+    int n2 = 0;
+    QTAILQ_FOREACH(op, &s->ops, link) {
+        printf("Inst: %s\n", tcg_op_defs[oparray[n2].opc].name);
+        *op = oparray[n2];
+        n2++;
+    }
+    free(is_sched);
+    free(oparray);
+    free_graph(graph, n-1);
+} 
+
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
@@ -4086,7 +4384,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     atomic_set(&prof->opt_time, prof->opt_time + profile_getclock());
     atomic_set(&prof->la_time, prof->la_time - profile_getclock());
 #endif
-
+    tcg_instruction_scheduler(s);
     reachable_code_pass(s);
     liveness_pass_1(s);
 
@@ -4117,6 +4415,17 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                  && qemu_log_in_addr_range(tb->pc))) {
         FILE *logfile = qemu_log_lock();
         qemu_log("OP after optimization and liveness analysis:\n");
+        tcg_dump_ops(s, true);
+        qemu_log("\n");
+        qemu_log_unlock(logfile);
+    }
+#endif
+    
+#ifdef DEBUG_DISAS
+    if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
+                 && qemu_log_in_addr_range(tb->pc))) {
+        FILE *logfile = qemu_log_lock();
+        qemu_log("OP after rescheduling:\n");
         tcg_dump_ops(s, true);
         qemu_log("\n");
         qemu_log_unlock(logfile);
