@@ -4095,20 +4095,13 @@ int instruction_is_pathological(TCGOp *op) {
 }
 
 void free_graph(struct Graph g, int n_lim) {
-    /*struct Node **arr = malloc(sizeof(void*)*(n_lim+1));
-    for(int i = n_lim; i >= 0; i--) {
-        struct Node *n = get_nth_node(&g.start, i);
-        arr[i] = n;
+    for(int i = n_lim; i >= 0; i++) {
+    	if(g.nodes[i].n_antecessors)
+    	    free(g.nodes[i].antecessors);
+    	if(g.nodes[i].n_successors)
+    	    free(g.nodes[i].successors);
     }
-    for(int i = n_lim; i >= 0; i--) {
-        struct Node *n = arr[i];
-        if(n->antecessors)
-            free(n->antecessors);
-        if(n->successors)
-            free(n->successors);
-        free(n);
-    }
-    free(arr);*/
+    free(g.nodes);
 };
 
 void sort_node_successors(struct Graph g, struct Node* n) {
@@ -4259,11 +4252,11 @@ void tcg_instruction_scheduler(TCGContext *s) {
     struct TCGOp *oparray = malloc(sizeof(struct TCGOp)*n);
     int *is_sched = malloc(sizeof(int)*n);
     memset(is_sched, 0, sizeof(int)*n);
-    printf("n_size: %d\n", n);
+    //printf("n_size: %d\n", n);
     recursive_successor_scheduler(oparray, is_sched, graph, &graph.start);
     int n2 = 0;
     QTAILQ_FOREACH(op, &s->ops, link) {
-        printf("Inst: %s\n", tcg_op_defs[oparray[n2].opc].name);
+        //printf("Inst: %s\n", tcg_op_defs[oparray[n2].opc].name);
         *op = oparray[n2];
         n2++;
     }
