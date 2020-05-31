@@ -1036,25 +1036,27 @@ struct Node {
     struct OrderedTCGOp ptr;
     int n_antecessors;
     int n_successors;
-    struct Node** antecessors;
-    struct Node** successors;
+    int* antecessors;
+    int* successors;
 };
 
 struct Graph {
+    struct Node* nodes;
     struct Node start;
-    struct Node end;
+    int n_nodes;
+    
 };
 
 void Init_Graph(struct Graph* g);
 struct Node* Attach_Node_Alloc(struct Node* antecessor, struct Node successor);
 void Attach_Nodes(struct Node* antecessor, struct Node* successor);
-struct Node* search_down_nodes(struct Node* start, TCGArg arg, int limit_n);
-struct Node* get_nth_node(struct Node* start, int n_lim);
+struct Node* search_down_nodes(struct Graph graph, TCGArg arg_c, int limit_n);
+struct Node* get_nth_node(struct Graph *g, int n_lim);
 int instruction_is_pathological(TCGOp *op);
 void tcg_instruction_scheduler(TCGContext *s);
 void free_graph(struct Graph g, int n_lim);
-void recursive_successor_scheduler(TCGOp *arr, int *is_sched, struct Node *n);
-void sort_node_successors(struct Node* n);
+void recursive_successor_scheduler(TCGOp *arr, int *is_sched, struct Graph g, struct Node *n);
+void sort_node_successors(struct Graph g, struct Node* n);
 
 void tcg_optimize(TCGContext *s);
 
