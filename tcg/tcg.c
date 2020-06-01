@@ -4095,7 +4095,7 @@ int instruction_is_pathological(TCGOp *op) {
 }
 
 void free_graph(struct Graph g, int n_lim) {
-    for(int i = n_lim; i >= 0; i++) {
+    for(int i = n_lim; i >= 0; i--) {
     	if(g.nodes[i].n_antecessors)
     	    free(g.nodes[i].antecessors);
     	if(g.nodes[i].n_successors)
